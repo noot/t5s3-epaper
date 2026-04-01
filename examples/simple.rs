@@ -29,6 +29,7 @@ fn main() -> ! {
     info!("Initialise the display");
     let mut display = Display::new(
         pin_config!(peripherals),
+        peripherals.I2C0,
         peripherals.DMA_CH0,
         peripherals.LCD_CAM,
         peripherals.RMT,
@@ -36,7 +37,7 @@ fn main() -> ! {
     .expect("to initialize display");
 
     info!("Turn the display on");
-    display.power_on();
+    display.power_on().expect("to power on display");
     delay.delay_millis(10);
 
     info!("clear the screen");
@@ -53,7 +54,7 @@ fn main() -> ! {
         .expect("to flush to display");
 
     info!("Turn the display off again");
-    display.power_off();
+    display.power_off().expect("to power off display");
 
     info!("do nothing");
     loop {}

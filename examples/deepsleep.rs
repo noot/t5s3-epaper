@@ -57,6 +57,7 @@ fn main() -> ! {
 
     let mut display = Display::new(
         pin_config!(peripherals),
+        peripherals.I2C0,
         peripherals.DMA_CH0,
         peripherals.LCD_CAM,
         peripherals.RMT,
@@ -70,7 +71,7 @@ fn main() -> ! {
     let wake_reason = wakeup_cause();
 
     // turn screen on
-    display.power_on();
+    display.power_on().expect("to power on display");
     delay.delay_millis(20);
     // clear
     let cycle = unsafe { CYCLE };
@@ -116,7 +117,7 @@ fn main() -> ! {
         .flush(DrawMode::BlackOnWhite)
         .expect("to flush to display");
     // turn screen off
-    display.power_off();
+    display.power_off().expect("to power off display");
     unsafe {
         if let Some(rect) = rect {
             LAST_RECT = rect;

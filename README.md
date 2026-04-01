@@ -4,7 +4,7 @@
 
 Simple driver for
 the [LilyGo T5 4.7 Inch E-Paper display](https://www.lilygo.cc/en-pl/products/t5-4-7-inch-e-paper-v2-3).
-The driver only supports the V2.3 hardware variant (ESP32-S3).
+The driver is wired for the LilyGo T5 S3 Paper Pro Lite / T5S3 4.7 inch E-Paper Pro hardware variant (ESP32-S3).
 
 It should also work on the touch version, but I don't have the necessary hardware to validate that claim.
 
@@ -42,30 +42,26 @@ use embedded_graphics::{
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use esp_backtrace as _;
-use esp_hal::{
-    delay::Delay,
-    gpio::Io,
-    prelude::*,
-};
+use esp_hal::{delay::Delay, prelude::*};
 use lilygo_epd47::{pin_config, Display, DrawMode};
 
 #[entry]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let delay = Delay::new();
     // Create PSRAM allocator
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
     // Initialise the display
     let mut display = Display::new(
-        pin_config!(io),
-        peripherals.DMA,
+        pin_config!(peripherals),
+        peripherals.I2C0,
+        peripherals.DMA_CH0,
         peripherals.LCD_CAM,
         peripherals.RMT,
     )
         .expect("to initialize display");
     // Turn the display on
-    display.power_on();
+    display.power_on().unwrap();
     delay.delay_millis(10);
     // clear the screen
     display.clear().unwrap();
@@ -78,7 +74,7 @@ fn main() -> ! {
     // Flush the framebuffer to the screen
     display.flush(DrawMode::BlackOnWhite).unwrap();
     // Turn the display of again
-    display.power_off();
+    display.power_off().unwrap();
     // do nothing
     loop {}
 }

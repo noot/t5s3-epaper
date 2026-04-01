@@ -10,13 +10,15 @@ use esp_hal::{
 pub(crate) struct Rmt<'a> {
     tx_channel: Option<Channel<'a, Blocking, Tx>>,
     _rmt: peripherals::RMT<'a>,
+    pin: Option<peripherals::GPIO48<'a>>,
 }
 
 impl<'a> Rmt<'a> {
-    pub(crate) fn new(_rmt: peripherals::RMT<'a>) -> Self {
+    pub(crate) fn new(_rmt: peripherals::RMT<'a>, pin: peripherals::GPIO48<'a>) -> Self {
         Rmt {
             tx_channel: None,
             _rmt,
+            pin: Some(pin),
         }
     }
 
@@ -33,9 +35,10 @@ impl<'a> Rmt<'a> {
             .with_idle_output(true)
             .with_carrier_modulation(false)
             .with_carrier_level(Level::Low);
+        let pin = self.pin.take().ok_or(crate::Error::MissingRmtPin)?;
         let tx_channel = rmt
             .channel1
-            .configure_tx(unsafe { peripherals::GPIO38::steal() }, config)
+            .configure_tx(pin, config)
             .map_err(crate::Error::Rmt)?;
         self.tx_channel = Some(tx_channel);
         Ok(())
@@ -47,7 +50,7 @@ impl<'a> Rmt<'a> {
         wait: bool,
     ) -> Result<Option<SingleShotTxTransaction<'a, 'b, PulseCode>>, crate::Error> {
         self.ensure_channel()?;
-        let tx_channel = self.tx_channel.take().ok_or(crate::Error::Unknown)?;
+        let tx_channel = self.tx_channel.take().ok_or(crate::Error::MissingRmtChannel)?;
         let tx = tx_channel.transmit(data).map_err(crate::Error::Rmt)?;
         if wait {
             // if false {

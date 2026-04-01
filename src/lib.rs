@@ -1,5 +1,6 @@
 //! Simple driver for the LilyGo T5 4.7 inch E-Ink Display.
-//! The driver only supports the V2.3 hardware variant (ESP32-S3)
+//! The driver is wired for the LilyGo T5 S3 Paper Pro Lite / T5S3 4.7 inch
+//! E-Paper Pro hardware variant (ESP32-S3).
 //!
 //! This library depends on alloc and requires you to set up an global allocator
 //! for the PSRAM.
@@ -40,13 +41,14 @@
 //!     // Initialise the display
 //!     let mut display = Display::new(
 //!         pin_config!(peripherals),
-//!         peripherals.DMA,
+//!         peripherals.I2C0,
+//!         peripherals.DMA_CH0,
 //!         peripherals.LCD_CAM,
 //!         peripherals.RMT,
 //!     )
 //!     .expect("to initialize display");
 //!     // Turn the display on
-//!     display.power_on();
+//!     display.power_on().unwrap();
 //!     delay.delay_millis(10);
 //!     // clear the screen
 //!     display.clear().unwrap();
@@ -59,7 +61,7 @@
 //!     // Flush the framebuffer to the screen
 //!     display.flush(DrawMode::BlackOnWhite).unwrap();
 //!     // Turn the display of again
-//!     display.power_off();
+//!     display.power_off().unwrap();
 //!     // do nothing
 //!     loop {}
 //! }
@@ -85,11 +87,24 @@ pub enum Error {
     Dma(esp_hal::dma::DmaError),
     /// Pass-through
     DmaBuffer(esp_hal::dma::DmaBufError),
+    /// Pass-through
+    I2c(esp_hal::i2c::master::Error),
+    /// Pass-through
+    I2cConfig(esp_hal::i2c::master::ConfigError),
     /// Provided pixel coordinates exceed the display boundary.
     OutOfBounds,
     /// Provided color exceeds the allowed range of 0x0 - 0x0F
     InvalidColor,
-    Unknown,
+    /// Timed out waiting for the power supply to report ready.
+    PowerTimeout,
+    /// LCD peripheral handle was unexpectedly unavailable.
+    MissingI8080,
+    /// DMA buffer was unexpectedly unavailable.
+    MissingDmaBuffer,
+    /// RMT output pin was unexpectedly unavailable.
+    MissingRmtPin,
+    /// RMT channel was unexpectedly unavailable.
+    MissingRmtChannel,
 }
 
 type Result<T> = core::result::Result<T, Error>;
@@ -103,25 +118,23 @@ pub use crate::{
 /// Convenience macro to build the pin config struct.
 #[macro_export]
 macro_rules! pin_config {
-    ($($name:ident),*) => {
-        $(
-            #[allow(unused_mut)]
-            lilygo_epd47::PinConfig {
-                data0: $name.GPIO8,
-                data1: $name.GPIO1,
-                data2: $name.GPIO2,
-                data3: $name.GPIO3,
-                data4: $name.GPIO4,
-                data5: $name.GPIO5,
-                data6: $name.GPIO6,
-                data7: $name.GPIO7,
-                cfg_data: $name.GPIO13,
-                cfg_clk: $name.GPIO12,
-                cfg_str: $name.GPIO0,
-                lcd_dc: $name.GPIO40,
-                lcd_wrx: $name.GPIO41,
-                rmt: $name.GPIO38,
-            }
-        )*
-    }
+    ($name:expr) => {{
+        lilygo_epd47::PinConfig {
+            data0: $name.GPIO5,
+            data1: $name.GPIO6,
+            data2: $name.GPIO7,
+            data3: $name.GPIO15,
+            data4: $name.GPIO16,
+            data5: $name.GPIO17,
+            data6: $name.GPIO18,
+            data7: $name.GPIO8,
+            i2c_sda: $name.GPIO39,
+            i2c_scl: $name.GPIO40,
+            leh: $name.GPIO42,
+            lcd_dc: $name.GPIO41,
+            lcd_wrx: $name.GPIO4,
+            rmt: $name.GPIO48,
+            stv: $name.GPIO45,
+        }
+    }};
 }

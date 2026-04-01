@@ -24,6 +24,7 @@ fn main() -> ! {
 
     let mut display = Display::new(
         pin_config!(peripherals),
+        peripherals.I2C0,
         peripherals.DMA_CH0,
         peripherals.LCD_CAM,
         peripherals.RMT,
@@ -31,10 +32,10 @@ fn main() -> ! {
     .expect("to initialize display");
 
     let delay = Delay::new();
-    display.power_on();
+    display.power_on().expect("to power on display");
     delay.delay_millis(10);
     display.repair(delay).expect("to repair display");
-    display.power_off();
+    display.power_off().expect("to power off display");
 
     loop {}
 }
