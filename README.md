@@ -22,6 +22,21 @@ Built using [`esp-hal`] and [`embedded-graphics`]
 This is an experimental port of the C library. I ported the basic functionality and tried to simplify it as much as
 possible. I give no guarantee that this is the correct usage of the hardware, use at your own risk!
 
+## Update Modes
+
+The driver currently exposes two practical update paths:
+
+- `display.flush(DrawMode::...)` for the normal full-quality update path. This supports the existing grayscale workflow, but it is relatively slow and visibly flashes.
+- `display.flush_partial_fast(area)` for fast monochrome partial updates on a rectangular region. This uses the panel's direct-update waveform and is intended for small UI elements such as counters, clocks, or battery readouts.
+
+Use `flush_partial_fast()` only when all of these are true:
+
+- the updated region is small
+- the content is effectively black-on-white UI/text
+- some ghosting is acceptable between occasional full refreshes
+
+It is not a general grayscale partial-refresh API.
+
 ## Usage
 
 1. Prepare your development requirement according to
@@ -80,10 +95,26 @@ fn main() -> ! {
 }
 ```
 
+For low-flicker UI updates, draw into a small region and then flush just that area:
+
+```rust
+use lilygo_epd47::display::Rectangle;
+
+let area = Rectangle {
+    x: 40,
+    y: 200,
+    width: 320,
+    height: 80,
+};
+
+display.flush_partial_fast(area).unwrap();
+```
+
 ## Examples
 
 Run examples like this ` cargo run --release --example <name>`.
 
+- `battery` - Battery voltage / percentage readout using the on-board fuel gauge with a fast monochrome partial update
 - `counter` - Simple counter that updates every second. Only refreshes the screen partially
 - `grayscale` - Alternating loop between a horizontal/vertical "gradient" of all the available colors. You may notice
   that the darker colors are harder to distinguish. This is probably due to the waveforms not being used (yet).
@@ -101,7 +132,7 @@ Run examples like this ` cargo run --release --example <name>`.
 
 - [ ] Basic examples and docs
 - [ ] Compare performance to original implementation
-- [ ] Implement Waveforms / LUT
+- [ ] Implement fuller waveform / LUT support beyond direct-update partial refresh
 
 ## Credits
 

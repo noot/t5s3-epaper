@@ -5,6 +5,10 @@
 //! This library depends on alloc and requires you to set up an global allocator
 //! for the PSRAM.
 //!
+//! `Display::flush()` is the general-purpose update path.
+//! `Display::flush_partial_fast()` is available for low-flicker monochrome
+//! updates on small rectangular UI regions.
+//!
 //!
 //! Built using [`esp-hal`] and [`embedded-graphics`]
 //!
@@ -65,6 +69,22 @@
 //!     // do nothing
 //!     loop {}
 //! }
+//! ```
+//!
+//! For small black-on-white UI regions, you can use the fast direct-update path:
+//!
+//! ```rust no_run
+//! use lilygo_epd47::display::Rectangle;
+//!
+//! let area = Rectangle {
+//!     x: 40,
+//!     y: 200,
+//!     width: 320,
+//!     height: 80,
+//! };
+//!
+//! display.flush_partial_fast(area).unwrap();
+//! ```
 #![no_std]
 
 extern crate alloc;

@@ -11,7 +11,7 @@ use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use esp_backtrace as _;
 use esp_hal::{delay::Delay, main};
 use lilygo_epd47::display::Rectangle;
-use lilygo_epd47::{pin_config, Display, DrawMode};
+use lilygo_epd47::{pin_config, Display};
 use u8g2_fonts::FontRenderer;
 
 static FONT: FontRenderer = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_spleen32x64_mr>();
@@ -58,8 +58,6 @@ fn main() -> ! {
             .battery_percentage()
             .expect("to read battery percentage");
 
-        display.clear_area(text_area).expect("to clear text area");
-
         FONT.render_aligned(
             format_args!("Battery: {:>5.3}V {:>3}%", voltage, percent),
             text_origin,
@@ -74,7 +72,7 @@ fn main() -> ! {
         .expect("to render font in the framebuffer");
 
         display
-            .flush(DrawMode::BlackOnWhite)
+            .flush_partial_fast(text_area)
             .expect("to flush to display");
         delay.delay_millis(5000);
     }

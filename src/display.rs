@@ -60,11 +60,32 @@ const TAINTED_ROWS_SIZE: usize = Display::HEIGHT as usize / 8 + 1;
 const FRAMEBUFFER_SIZE: usize = (Display::WIDTH / 2) as usize * Display::HEIGHT as usize;
 const BYTES_PER_LINE: usize = Display::WIDTH as usize / 4;
 const LINE_BYTES_4BPP: usize = Display::WIDTH as usize / 2;
+const LINE_BYTES_DIFFERENCE: usize = Display::WIDTH as usize;
+const DU_FRAME_TIMES: [u16; 5] = [1000, 1000, 1000, 1000, 1000];
+const DU_LUT_PHASE: [[u8; 4]; 16] = [
+    [0x15, 0x55, 0x55, 0x55],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0xAA, 0xAA, 0xAA, 0xA8],
+];
 
 pub struct Display<'a> {
     epd: ed047tc1::ED047TC1<'a>,
     skipping: u16,
     framebuffer: Box<[u8; FRAMEBUFFER_SIZE]>,
+    previous_framebuffer: Box<[u8; FRAMEBUFFER_SIZE]>,
     tainted_rows: [u8; TAINTED_ROWS_SIZE],
     rotation: DisplayRotation,
 }
@@ -92,6 +113,7 @@ impl<'a> Display<'a> {
             epd: ed047tc1::ED047TC1::new(pins, i2c, dma, lcd_cam, rmt)?,
             skipping: 0,
             framebuffer: Box::new([0xFF; FRAMEBUFFER_SIZE]),
+            previous_framebuffer: Box::new([0xFF; FRAMEBUFFER_SIZE]),
             tainted_rows: [0; TAINTED_ROWS_SIZE],
             rotation: DisplayRotation::default(),
         })
@@ -173,6 +195,7 @@ impl<'a> Display<'a> {
         debug!("display flush");
         self.draw(mode)?;
         self.tainted_rows.fill(0);
+        self.previous_framebuffer.copy_from_slice(&*self.framebuffer);
         self.framebuffer.fill(0xFF);
         Ok(())
     }
@@ -201,7 +224,36 @@ impl<'a> Display<'a> {
     }
 
     pub fn clear_area(&mut self, area: Rectangle) -> Result<()> {
-        self.clear_cycles(area, 4, 50)
+        let area = self.clip_rectangle(area);
+        if area.width == 0 || area.height == 0 {
+            return Ok(());
+        }
+        self.clear_cycles(area, 4, 50)?;
+        fill_rect(&mut self.framebuffer, area, 0x0F);
+        fill_rect(&mut self.previous_framebuffer, area, 0x0F);
+        Ok(())
+    }
+
+    /// Fast partial monochrome update using the panel's direct-update waveform.
+    ///
+    /// This is intended for small text/UI regions where reduced flicker matters
+    /// more than perfect grayscale handling.
+    pub fn flush_partial_fast(&mut self, area: Rectangle) -> Result<()> {
+        let area = self.clip_rectangle(area);
+        if area.width == 0 || area.height == 0 {
+            return Ok(());
+        }
+
+        debug!("display flush partial fast");
+        self.draw_partial_du(area)?;
+        copy_rect(
+            &mut self.previous_framebuffer,
+            &self.framebuffer,
+            area,
+        );
+        self.framebuffer.fill(0xFF);
+        self.tainted_rows.fill(0);
+        Ok(())
     }
 
     fn clear_cycles(&mut self, area: Rectangle, cycles: u16, cycle_time: u16) -> Result<()> {
@@ -214,6 +266,58 @@ impl<'a> Display<'a> {
             }
         }
         Ok(())
+    }
+
+    fn draw_partial_du(&mut self, area: Rectangle) -> Result<()> {
+        let mut lut = vec![0u8; 1 << 16];
+        let mut line = [0u8; LINE_BYTES_DIFFERENCE];
+
+        for output_time in DU_FRAME_TIMES {
+            update_du_lut(&mut lut, &DU_LUT_PHASE);
+            self.skipping = 0;
+            self.epd.frame_start()?;
+
+            for y in 0..Self::HEIGHT {
+                if y < area.y || y >= area.y + area.height {
+                    self.row_skip(output_time)?;
+                    continue;
+                }
+
+                let start = y as usize * LINE_BYTES_4BPP;
+                let end = start + LINE_BYTES_4BPP;
+                let framebuffer_line = &self.framebuffer[start..end];
+                let previous_line = &self.previous_framebuffer[start..end];
+
+                if !build_difference_line(framebuffer_line, previous_line, area, &mut line) {
+                    self.row_skip(output_time)?;
+                    continue;
+                }
+
+                let buf = prepare_dma_difference_buffer(&line, &lut);
+                self.epd.set_buffer(buf.as_slice())?;
+                self.row_write(output_time)?;
+            }
+
+            if self.skipping == 0 {
+                self.row_write(output_time)?;
+            }
+            self.epd.frame_end()?;
+        }
+
+        Ok(())
+    }
+
+    fn clip_rectangle(&self, area: Rectangle) -> Rectangle {
+        let x = area.x.min(Self::WIDTH);
+        let y = area.y.min(Self::HEIGHT);
+        let max_x = area.x.saturating_add(area.width).min(Self::WIDTH);
+        let max_y = area.y.saturating_add(area.height).min(Self::HEIGHT);
+        Rectangle {
+            x,
+            y,
+            width: max_x.saturating_sub(x),
+            height: max_y.saturating_sub(y),
+        }
     }
 
     fn push_pixels(&mut self, area: Rectangle, time: u16, color: u16) -> Result<()> {
@@ -359,6 +463,22 @@ fn prepare_dma_buffer(line_data: &[u8], conversion_lut: &[u8]) -> Vec<u8> {
     epd_input
 }
 
+fn prepare_dma_difference_buffer(line_data: &[u8], conversion_lut: &[u8]) -> Vec<u8> {
+    let mut epd_input = vec![0u8; BYTES_PER_LINE];
+    let line_data_16: Vec<u16> = line_data
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+
+    for j in 0..BYTES_PER_LINE {
+        let v1 = line_data_16[2 * j] as usize;
+        let v2 = line_data_16[2 * j + 1] as usize;
+        epd_input[j] = conversion_lut[v1] | (conversion_lut[v2] << 4);
+    }
+
+    epd_input
+}
+
 fn update_lut(conversion_lut: &mut [u8], k: usize, mode: DrawMode) {
     let k = match mode {
         DrawMode::BlackOnWhite | DrawMode::WhiteOnWhite => Display::DRAW_IMAGE_FRAME_COUNT - k,
@@ -381,5 +501,100 @@ fn update_lut(conversion_lut: &mut [u8], k: usize, mode: DrawMode) {
     }
     for l in (k << 12)..((k + 1) << 12) {
         conversion_lut[l] &= 0x3F;
+    }
+}
+
+fn update_du_lut(conversion_lut: &mut [u8], phase: &[[u8; 4]; 16]) {
+    for (to, packed) in phase.iter().enumerate() {
+        for (from_packed, value) in packed.iter().enumerate() {
+            let index = (to << 4) | (from_packed * 4);
+            conversion_lut[index] = (value >> 6) & 0x03;
+            conversion_lut[index + 1] = (value >> 4) & 0x03;
+            conversion_lut[index + 2] = (value >> 2) & 0x03;
+            conversion_lut[index + 3] = value & 0x03;
+        }
+    }
+
+    for outer in (0..=0xFF).rev() {
+        let outer_result = conversion_lut[outer] << 2;
+        let base = outer << 8;
+        conversion_lut.copy_within(0..0x100, base);
+        for entry in &mut conversion_lut[base..base + 0x100] {
+            *entry |= outer_result;
+        }
+    }
+}
+
+fn build_difference_line(
+    framebuffer_line: &[u8],
+    previous_line: &[u8],
+    area: Rectangle,
+    line: &mut [u8; LINE_BYTES_DIFFERENCE],
+) -> bool {
+    let mut dirty = false;
+    let x_start = area.x as usize;
+    let x_end = x_start + area.width as usize;
+
+    for x in 0..Display::WIDTH as usize {
+        let previous = nibble_at(previous_line, x);
+        let target = if (x_start..x_end).contains(&x) {
+            nibble_at(framebuffer_line, x)
+        } else {
+            previous
+        };
+        dirty |= target != previous;
+        line[x] = (target << 4) | previous;
+    }
+
+    dirty
+}
+
+fn nibble_at(line: &[u8], x: usize) -> u8 {
+    let value = line[x / 2];
+    if x % 2 == 0 {
+        value & 0x0F
+    } else {
+        value >> 4
+    }
+}
+
+fn fill_rect(framebuffer: &mut [u8; FRAMEBUFFER_SIZE], area: Rectangle, color: u8) {
+    let packed = (color << 4) | color;
+    for y in area.y..area.y + area.height {
+        let start = y as usize * LINE_BYTES_4BPP;
+        let end = start + LINE_BYTES_4BPP;
+        let row = &mut framebuffer[start..end];
+        for x in area.x..area.x + area.width {
+            let index = x as usize / 2;
+            let value = row[index];
+            row[index] = if x % 2 == 0 {
+                (value & 0xF0) | color
+            } else {
+                (value & 0x0F) | (color << 4)
+            };
+        }
+        if area.x == 0 && area.width == Display::WIDTH {
+            row.fill(packed);
+        }
+    }
+}
+
+fn copy_rect(
+    destination: &mut [u8; FRAMEBUFFER_SIZE],
+    source: &[u8; FRAMEBUFFER_SIZE],
+    area: Rectangle,
+) {
+    for y in area.y..area.y + area.height {
+        let row_start = y as usize * LINE_BYTES_4BPP;
+        let dest_row = &mut destination[row_start..row_start + LINE_BYTES_4BPP];
+        let src_row = &source[row_start..row_start + LINE_BYTES_4BPP];
+        for x in area.x..area.x + area.width {
+            let index = x as usize / 2;
+            if x % 2 == 0 {
+                dest_row[index] = (dest_row[index] & 0xF0) | (src_row[index] & 0x0F);
+            } else {
+                dest_row[index] = (dest_row[index] & 0x0F) | (src_row[index] & 0xF0);
+            }
+        }
     }
 }
