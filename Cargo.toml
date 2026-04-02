@@ -1,13 +1,13 @@
 [package]
 name = "lilygo-t5s3paperpro"
-description = "Simple driver for the LilyGo 4.7 inch E-Ink Display family on ESP32-S3"
+description = "Simple driver for the LilyGo T5 S3 ePaper Pro family on ESP32-S3"
 version = "1.0.0"
-authors = ["Frido Koch <info@fridokoch.de>"]
+authors = ["Andrew Whaley <andrew@whaley.org.uk", "Frido Koch <info@fridokoch.de>"]
 edition = "2021"
 license = "GPL-3.0"
 categories = ["embedded", "no-std"]
 readme = "./README.md"
-repository = "https://github.com/fridolin-koch/lilygo-epd47-rs"
+repository = "https://github.com/azw413/lilygo-t5s3paperpro-rs"
 keywords = ["epd", "lilygo", "esp-hal", "ED047TC1", "embedded-graphics"]
 
 [dependencies]
