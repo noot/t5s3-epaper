@@ -1,7 +1,7 @@
 [package]
 name = "lilygo-t5s3paperpro"
 description = "Simple driver for the LilyGo T5 S3 ePaper Pro family on ESP32-S3"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Andrew Whaley <andrew@whaley.org.uk", "Frido Koch <info@fridokoch.de>"]
 edition = "2021"
 license = "GPL-3.0"

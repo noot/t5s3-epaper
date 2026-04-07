@@ -4,7 +4,7 @@
 extern crate alloc;
 extern crate lilygo_t5s3paperpro;
 
-use alloc::{format, string::String};
+use alloc::string::String;
 use core::{fmt::Write as _, format_args};
 
 use embedded_graphics::prelude::*;
@@ -15,6 +15,11 @@ use lilygo_t5s3paperpro::{pin_config, sdcard_pin_config, Display, DrawMode, SdCa
 use u8g2_fonts::FontRenderer;
 
 static FONT: FontRenderer = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_spleen16x32_mr>();
+
+const TEST_DIR: &str = "/DRVTEST";
+const NESTED_DIR: &str = "/DRVTEST/NESTED";
+const SOURCE_FILE: &str = "/DRVTEST/NESTED/HELLO.TXT";
+const RENAMED_FILE: &str = "/DRVTEST/RENAMED.TXT";
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -41,17 +46,60 @@ fn main() -> ! {
         .expect("to initialize sd card");
     let card_size = sdcard.card_size_bytes().expect("to query card size");
 
-    let contents = format!("Hello from lilygo-t5s3paperpro\nCard size: {} bytes\n", card_size);
     sdcard
-        .write_root_file("TEST.TXT", contents.as_bytes())
-        .expect("to write test file");
+        .create_dir_all(NESTED_DIR)
+        .expect("to create nested directory tree");
+    assert!(sdcard.exists(TEST_DIR).expect("to check top-level dir"));
+    assert!(sdcard.exists(NESTED_DIR).expect("to check nested dir"));
 
-    let mut listing = sdcard.list_root().expect("to list root directory");
+    sdcard
+        .write_file(SOURCE_FILE, b"hello")
+        .expect("to write source file");
+    sdcard
+        .append_file(SOURCE_FILE, b" world")
+        .expect("to append source file");
+
+    let contents = sdcard.read_file(SOURCE_FILE).expect("to read source file");
+    assert_eq!(contents.as_slice(), b"hello world");
+
+    let metadata = sdcard.metadata(SOURCE_FILE).expect("to read metadata");
+    assert_eq!(metadata.size, 11);
+    assert!(!metadata.is_directory);
+
+    let nested_listing = sdcard.list_dir(NESTED_DIR).expect("to list nested dir");
+    assert!(nested_listing.iter().any(|entry| entry.name == "HELLO.TXT"));
+
+    sdcard
+        .rename_file(SOURCE_FILE, RENAMED_FILE)
+        .expect("to rename file");
+    assert!(!sdcard.exists(SOURCE_FILE).expect("to verify source removal"));
+    assert!(sdcard.exists(RENAMED_FILE).expect("to verify renamed file"));
+    assert_eq!(
+        sdcard.read_file(RENAMED_FILE).expect("to read renamed file"),
+        b"hello world"
+    );
+
+    sdcard
+        .delete_file(RENAMED_FILE)
+        .expect("to delete renamed file");
+    assert!(!sdcard.exists(RENAMED_FILE).expect("to verify delete"));
+
+    let remove_dir_result = sdcard.remove_dir(NESTED_DIR);
+    assert!(matches!(
+        remove_dir_result,
+        Err(lilygo_t5s3paperpro::sdcard::Error::Unsupported(_))
+    ));
+
+    let mut listing = sdcard.list_dir(TEST_DIR).expect("to list test dir");
     listing.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut body = String::new();
     let _ = writeln!(body, "SD: {} MB", card_size / (1024 * 1024));
-    let _ = writeln!(body, "Wrote /TEST.TXT");
+    let _ = writeln!(body, "create_dir_all ok");
+    let _ = writeln!(body, "write+append+read ok");
+    let _ = writeln!(body, "metadata+list ok");
+    let _ = writeln!(body, "rename+delete ok");
+    let _ = writeln!(body, "remove_dir unsupported");
     let _ = writeln!(body);
 
     for entry in listing.iter().take(10) {
