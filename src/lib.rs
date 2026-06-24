@@ -98,6 +98,7 @@
 extern crate alloc;
 
 pub mod display;
+pub mod frontlight;
 pub mod input;
 pub mod power;
 pub mod rtc;
@@ -174,6 +175,7 @@ pub use crate::{
     battery::Battery,
     display::{Display, DrawMode},
     ed047tc1::PinConfig,
+    frontlight::FrontLight,
     input::{Buttons, InputState},
     power::WakeStatus,
     rtc::Clock,
