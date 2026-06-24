@@ -162,6 +162,14 @@ impl<'a> Display<'a> {
         crate::power::deep_sleep(lpwr, boot_button, timer)
     }
 
+    /// Read the panel temperature in degrees Celsius from the TPS65185 PMIC.
+    ///
+    /// This triggers a one-shot thermistor measurement and blocks until the
+    /// conversion completes (~10 ms). The display must be powered on.
+    pub fn panel_temperature(&mut self) -> Result<i8> {
+        self.epd.panel_temperature()
+    }
+
     /// Read the battery voltage in volts from the on-board BQ27220 fuel gauge.
     pub fn battery_voltage(&mut self) -> Result<f32> {
         Ok(self.epd.battery_voltage_mv()? as f32 / 1000.0)

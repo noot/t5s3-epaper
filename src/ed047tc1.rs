@@ -47,10 +47,13 @@ const PCA9555_REG_INVERT_PORT0: u8 = 4;
 const PCA9555_REG_INVERT_PORT1: u8 = 5;
 const PCA9555_REG_CONFIG_PORT0: u8 = 6;
 const PCA9555_REG_CONFIG_PORT1: u8 = 7;
+const TPS_REG_TMST_VALUE: u8 = 0x00;
 const TPS_REG_ENABLE: u8 = 0x01;
 const TPS_REG_VCOM1: u8 = 0x03;
 const TPS_REG_VCOM2: u8 = 0x04;
+const TPS_REG_TMST1: u8 = 0x0D;
 const TPS_REG_PG: u8 = 0x0F;
+const TPS_TMST1_READ_THERM: u8 = 1 << 7;
 const BQ27220_ADDR: u8 = 0x55;
 const BQ27220_REG_VOLTAGE: u8 = 0x08;
 const BQ27220_REG_STATE_OF_CHARGE: u8 = 0x2C;
@@ -211,6 +214,25 @@ impl<'a> ConfigWriter<'a> {
 
     fn tps_power_good(&mut self) -> crate::Result<bool> {
         Ok(self.read_register(TPS65185_ADDR, TPS_REG_PG)? & 0xFA == 0xFA)
+    }
+
+    fn panel_temperature(&mut self) -> crate::Result<i8> {
+        self.write_register(TPS65185_ADDR, &[TPS_REG_TMST1, TPS_TMST1_READ_THERM])?;
+        // poll CONV_END (bit 5) in TMST1 until conversion finishes
+        let mut tries = 0;
+        loop {
+            let tmst1 = self.read_register(TPS65185_ADDR, TPS_REG_TMST1)?;
+            if tmst1 & (1 << 5) != 0 {
+                break;
+            }
+            tries += 1;
+            if tries >= 500 {
+                return Err(crate::Error::PowerTimeout);
+            }
+            busy_delay(240_000);
+        }
+        let raw = self.read_register(TPS65185_ADDR, TPS_REG_TMST_VALUE)?;
+        Ok(raw as i8)
     }
 
     fn read_register(&mut self, device: u8, reg: u8) -> crate::Result<u8> {
@@ -599,6 +621,10 @@ impl<'a> ED047TC1<'a> {
 
     pub(crate) fn battery_state_of_charge(&mut self) -> crate::Result<u16> {
         self.cfg_writer.battery_state_of_charge()
+    }
+
+    pub(crate) fn panel_temperature(&mut self) -> crate::Result<i8> {
+        self.cfg_writer.panel_temperature()
     }
 
     pub(crate) fn shutdown(&mut self) -> crate::Result<()> {
