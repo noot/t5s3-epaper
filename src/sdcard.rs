@@ -2,7 +2,14 @@ use alloc::{format, string::String, vec::Vec};
 
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_sdmmc::{
-    DirEntry, LfnBuffer, Mode, SdCardError, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+    DirEntry,
+    LfnBuffer,
+    Mode,
+    SdCardError,
+    TimeSource,
+    Timestamp,
+    VolumeIdx,
+    VolumeManager,
 };
 use esp_hal::{
     delay::Delay,
@@ -46,7 +53,8 @@ impl SdTimeSource {
 impl Default for SdTimeSource {
     fn default() -> Self {
         Self {
-            timestamp: Timestamp::from_calendar(2026, 1, 1, 0, 0, 0).unwrap(),
+            timestamp: Timestamp::from_calendar(2026, 1, 1, 0, 0, 0)
+                .expect("calendar literal is valid"),
         }
     }
 }
@@ -69,7 +77,8 @@ pub enum Error {
     Card(SdCardError),
     /// The provided path is empty, malformed, or uses unsupported components.
     InvalidPath(&'static str),
-    /// The requested operation is not supported by the underlying filesystem crate.
+    /// The requested operation is not supported by the underlying filesystem
+    /// crate.
     Unsupported(&'static str),
 }
 
@@ -114,8 +123,8 @@ impl<'d> SdCard<'d> {
         let mut sd_bus = sd_bus;
         sd_bus.write(&[0xFF; 10]).map_err(Error::Spi)?;
 
-        let sd_device =
-            ExclusiveDevice::new(sd_bus, sd_cs, Delay::new()).map_err(|_| Error::InvalidPath("failed to create SPI device"))?;
+        let sd_device = ExclusiveDevice::new(sd_bus, sd_cs, Delay::new())
+            .map_err(|_| Error::InvalidPath("failed to create SPI device"))?;
         let sd_card = embedded_sdmmc::SdCard::new(sd_device, Delay::new());
         let card_size_bytes = sd_card.num_bytes().map_err(Error::Card)?;
         let volume_mgr = VolumeManager::new(sd_card, time_source);
@@ -317,7 +326,9 @@ impl<'d> SdCard<'d> {
     fn open_volume0(
         &self,
     ) -> Result<embedded_sdmmc::Volume<'_, BlockDevice<'d>, SdTimeSource, 4, 4, 1>> {
-        self.volume_mgr.open_volume(VolumeIdx(0)).map_err(Error::Filesystem)
+        self.volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(Error::Filesystem)
     }
 
     fn write_file_with_mode(&self, path: &str, contents: &[u8], mode: Mode) -> Result<()> {
@@ -326,7 +337,9 @@ impl<'d> SdCard<'d> {
         let volume = self.open_volume0()?;
         let mut dir = volume.open_root_dir().map_err(Error::Filesystem)?;
         change_dir_all(&mut dir, &parent_components).map_err(Error::Filesystem)?;
-        let file = dir.open_file_in_dir(name, mode).map_err(Error::Filesystem)?;
+        let file = dir
+            .open_file_in_dir(name, mode)
+            .map_err(Error::Filesystem)?;
         file.write(contents).map_err(Error::Filesystem)?;
         file.flush().map_err(Error::Filesystem)
     }
@@ -351,7 +364,14 @@ fn display_name(entry: &DirEntry, long_name: Option<&str>) -> String {
         .unwrap_or_else(|| format!("{}", entry.name))
 }
 
-fn change_dir_all<'a, D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>(
+fn change_dir_all<
+    'a,
+    D,
+    T,
+    const MAX_DIRS: usize,
+    const MAX_FILES: usize,
+    const MAX_VOLUMES: usize,
+>(
     dir: &mut embedded_sdmmc::Directory<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
     components: &[&str],
 ) -> core::result::Result<(), embedded_sdmmc::Error<D::Error>>
@@ -367,11 +387,13 @@ where
 
 fn split_parent_name<'a>(components: &'a [&'a str]) -> Result<(Vec<&'a str>, &'a str)> {
     if components.is_empty() {
-        return Err(Error::InvalidPath("path must include a file or directory name"));
+        return Err(Error::InvalidPath(
+            "path must include a file or directory name",
+        ));
     }
-    let (name, parent) = components
-        .split_last()
-        .ok_or(Error::InvalidPath("path must include a file or directory name"))?;
+    let (name, parent) = components.split_last().ok_or(Error::InvalidPath(
+        "path must include a file or directory name",
+    ))?;
     Ok((parent.to_vec(), *name))
 }
 
@@ -391,7 +413,9 @@ fn path_components(path: &str) -> Result<Vec<&str>> {
             return Err(Error::InvalidPath("path contains an empty component"));
         }
         if matches!(component, "." | "..") {
-            return Err(Error::InvalidPath("relative path components are not supported"));
+            return Err(Error::InvalidPath(
+                "relative path components are not supported",
+            ));
         }
         components.push(component);
     }

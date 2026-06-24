@@ -10,8 +10,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use esp_backtrace as _;
 use esp_hal::{delay::Delay, main};
-use lilygo_t5s3paperpro::display::Rectangle;
-use lilygo_t5s3paperpro::{pin_config, Display};
+use lilygo_t5s3paperpro::{display::Rectangle, pin_config, Display};
 use u8g2_fonts::FontRenderer;
 
 static FONT: FontRenderer = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_spleen16x32_mr>();
@@ -57,13 +56,21 @@ fn main() -> ! {
         FONT.render_aligned(
             format_args!(
                 "Home: {}\nAux:  {}\nBoot: {}",
-                if input.buttons.home { "pressed " } else { "released" },
+                if input.buttons.home {
+                    "pressed "
+                } else {
+                    "released"
+                },
                 if input.buttons.auxiliary {
                     "pressed "
                 } else {
                     "released"
                 },
-                if input.buttons.boot { "pressed " } else { "released" }
+                if input.buttons.boot {
+                    "pressed "
+                } else {
+                    "released"
+                }
             ),
             text_origin,
             u8g2_fonts::types::VerticalPosition::Baseline,

@@ -5,7 +5,8 @@ use esp_hal::{
     peripherals::LPWR,
     rtc_cntl::{
         sleep::{Ext0WakeupSource, RtcSleepConfig, TimerWakeupSource, WakeupLevel},
-        Rtc, SocResetReason,
+        Rtc,
+        SocResetReason,
     },
     system::{reset_reason, wakeup_cause, SleepSource},
 };

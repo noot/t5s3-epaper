@@ -11,8 +11,7 @@ use embedded_graphics::{
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use esp_backtrace as _;
 use esp_hal::{delay::Delay, main};
-use lilygo_t5s3paperpro::display::Rectangle;
-use lilygo_t5s3paperpro::{pin_config, Display};
+use lilygo_t5s3paperpro::{display::Rectangle, pin_config, Display};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -65,10 +64,12 @@ fn main() -> ! {
                 let area = Rectangle {
                     x: point.x.saturating_sub(radius as u16 + 2),
                     y: point.y.saturating_sub(radius as u16 + 2),
-                    width: (((radius as u16) * 2 + 4).min(Display::WIDTH))
-                        .min(Display::WIDTH.saturating_sub(point.x.saturating_sub(radius as u16 + 2))),
-                    height: (((radius as u16) * 2 + 4).min(Display::HEIGHT))
-                        .min(Display::HEIGHT.saturating_sub(point.y.saturating_sub(radius as u16 + 2))),
+                    width: (((radius as u16) * 2 + 4).min(Display::WIDTH)).min(
+                        Display::WIDTH.saturating_sub(point.x.saturating_sub(radius as u16 + 2)),
+                    ),
+                    height: (((radius as u16) * 2 + 4).min(Display::HEIGHT)).min(
+                        Display::HEIGHT.saturating_sub(point.y.saturating_sub(radius as u16 + 2)),
+                    ),
                 };
                 display
                     .flush_partial_fast(area)

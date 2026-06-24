@@ -50,7 +50,10 @@ impl<'a> Rmt<'a> {
         wait: bool,
     ) -> Result<Option<SingleShotTxTransaction<'a, 'b, PulseCode>>, crate::Error> {
         self.ensure_channel()?;
-        let tx_channel = self.tx_channel.take().ok_or(crate::Error::MissingRmtChannel)?;
+        let tx_channel = self
+            .tx_channel
+            .take()
+            .ok_or(crate::Error::MissingRmtChannel)?;
         let tx = tx_channel.transmit(data).map_err(crate::Error::Rmt)?;
         if wait {
             // if false {
@@ -65,7 +68,7 @@ impl<'a> Rmt<'a> {
         }
     }
 
-    pub fn reclaim_channel<'b>(
+    pub(crate) fn reclaim_channel<'b>(
         &mut self,
         tx: SingleShotTxTransaction<'a, 'b, PulseCode>,
     ) -> Result<(), crate::Error> {

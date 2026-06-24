@@ -12,11 +12,7 @@ use embedded_graphics_core::{
     primitives::Rectangle,
 };
 use esp_backtrace as _;
-use esp_hal::{
-    delay::Delay,
-    main,
-    ram,
-};
+use esp_hal::{delay::Delay, main, ram};
 use lilygo_t5s3paperpro::{pin_config, power, Display, DrawMode};
 use u8g2_fonts::FontRenderer;
 

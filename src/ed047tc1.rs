@@ -14,7 +14,11 @@ use esp_hal::{
 };
 use log::debug;
 
-use crate::{input::{Buttons, InputState}, rmt, touchscreen::TouchState};
+use crate::{
+    input::{Buttons, InputState},
+    rmt,
+    touchscreen::TouchState,
+};
 
 macro_rules! pulse {
     ($high:expr, $low:expr) => {
@@ -140,7 +144,10 @@ impl<'a> ConfigWriter<'a> {
 
         writer.write_register(
             PCA9555_ADDR,
-            &[PCA9555_REG_CONFIG_PORT1, PCA_BIT_BUTTON | PCA_BIT_PWRGOOD | PCA_BIT_INT],
+            &[
+                PCA9555_REG_CONFIG_PORT1,
+                PCA_BIT_BUTTON | PCA_BIT_PWRGOOD | PCA_BIT_INT,
+            ],
         )?;
         writer.write_register(PCA9555_ADDR, &[PCA9555_REG_INVERT_PORT0, 0x00])?;
         writer.write_register(PCA9555_ADDR, &[PCA9555_REG_INVERT_PORT1, 0x00])?;
@@ -173,7 +180,8 @@ impl<'a> ConfigWriter<'a> {
     }
 
     fn set_stv(&mut self, level: bool) {
-        self.stv.set_level(if level { Level::High } else { Level::Low });
+        self.stv
+            .set_level(if level { Level::High } else { Level::Low });
     }
 
     fn pulse_leh(&mut self) {
@@ -194,7 +202,10 @@ impl<'a> ConfigWriter<'a> {
 
     fn set_vcom(&mut self, mv: u16) -> crate::Result<()> {
         let value = mv / 10;
-        self.write_register(TPS65185_ADDR, &[TPS_REG_VCOM2, ((value & 0x100) >> 8) as u8])?;
+        self.write_register(
+            TPS65185_ADDR,
+            &[TPS_REG_VCOM2, ((value & 0x100) >> 8) as u8],
+        )?;
         self.write_register(TPS65185_ADDR, &[TPS_REG_VCOM1, (value & 0xFF) as u8])
     }
 
@@ -228,7 +239,9 @@ impl<'a> ConfigWriter<'a> {
         buffer[0] = (reg >> 8) as u8;
         buffer[1] = reg as u8;
         buffer[2..len].copy_from_slice(payload);
-        self.i2c.write(device, &buffer[..len]).map_err(crate::Error::I2c)
+        self.i2c
+            .write(device, &buffer[..len])
+            .map_err(crate::Error::I2c)
     }
 
     fn read_register16(&mut self, device: u8, reg: u16, payload: &mut [u8]) -> crate::Result<()> {
@@ -358,7 +371,10 @@ impl<'a> ConfigWriter<'a> {
     fn touch_reload_config(&mut self) -> crate::Result<()> {
         let mut config = [0u8; GT911_CONFIG_LENGTH - 2];
         self.read_register16(self.touch_addr, GT911_CONFIG_VERSION, &mut config)?;
-        let checksum = (!config.iter().fold(0u8, |sum, value| sum.wrapping_add(*value))).wrapping_add(1);
+        let checksum = (!config
+            .iter()
+            .fold(0u8, |sum, value| sum.wrapping_add(*value)))
+        .wrapping_add(1);
         self.write_register16(self.touch_addr, GT911_CONFIG_CHKSUM, &[checksum])?;
         self.write_register16(self.touch_addr, GT911_CONFIG_FRESH, &[0x01])?;
         Ok(())
@@ -411,11 +427,14 @@ impl<'a> ConfigWriter<'a> {
             let raw_x = u16::from_le_bytes([buffer[offset + 1], buffer[offset + 2]]);
             let raw_y = u16::from_le_bytes([buffer[offset + 3], buffer[offset + 4]]);
             let (x, y) = if self.touch_resolution == (540, 960) {
-                let x = (u32::from(raw_y)
-                    * u32::from(crate::display::Display::WIDTH - 1)
+                let x = (u32::from(raw_y) * u32::from(crate::display::Display::WIDTH - 1)
                     / u32::from(self.touch_resolution.1 - 1)) as u16;
-                let y = (u32::from(self.touch_resolution.0.saturating_sub(1).saturating_sub(raw_x))
-                    * u32::from(crate::display::Display::HEIGHT - 1)
+                let y = (u32::from(
+                    self.touch_resolution
+                        .0
+                        .saturating_sub(1)
+                        .saturating_sub(raw_x),
+                ) * u32::from(crate::display::Display::HEIGHT - 1)
                     / u32::from(self.touch_resolution.0 - 1)) as u16;
                 (x, y)
             } else if self.touch_resolution.0 > 1 && self.touch_resolution.1 > 1 {
@@ -485,16 +504,15 @@ impl<'a> ED047TC1<'a> {
     ) -> crate::Result<Self> {
         let lcd_cam = LcdCam::new(lcd_cam);
 
-        let mut cfg_writer =
-            ConfigWriter::new(
-                i2c,
-                pins.i2c_sda,
-                pins.i2c_scl,
-                pins.leh,
-                pins.stv,
-                pins.touch_rst,
-                pins.touch_int,
-            )?;
+        let mut cfg_writer = ConfigWriter::new(
+            i2c,
+            pins.i2c_sda,
+            pins.i2c_scl,
+            pins.leh,
+            pins.stv,
+            pins.touch_rst,
+            pins.touch_int,
+        )?;
         cfg_writer.write()?;
 
         let (_, _, tx_buffer, tx_descriptors) = dma_buffers!(0, DMA_BUFFER_SIZE);
@@ -510,7 +528,7 @@ impl<'a> ED047TC1<'a> {
         let ctrl = ED047TC1 {
             i8080: Some(
                 i8080::I8080::new(lcd_cam.lcd, dma, config)
-                    .expect("to create i8080 device")
+                    .map_err(crate::Error::I8080)?
                     .with_dc(pins.lcd_dc)
                     .with_wrx(pins.lcd_wrx)
                     .with_data0(pins.data6)
@@ -541,7 +559,14 @@ impl<'a> ED047TC1<'a> {
         self.cfg_writer.config.vcom_ctrl = true;
         self.cfg_writer.write()?;
         busy_delay(240_000);
-        while !self.cfg_writer.pwrgood()? {}
+        let mut tries = 0;
+        while !self.cfg_writer.pwrgood()? {
+            tries += 1;
+            if tries >= 500 {
+                return Err(crate::Error::PowerTimeout);
+            }
+            busy_delay(240_000);
+        }
         self.cfg_writer.enable_tps()?;
         let mut tries = 0;
         while !self.cfg_writer.tps_power_good()? {
@@ -583,7 +608,10 @@ impl<'a> ED047TC1<'a> {
     pub(crate) fn input_state(&mut self) -> crate::Result<InputState> {
         let mut input = self.cfg_writer.input_state()?;
         input.buttons.auxiliary = self.cfg_writer.auxiliary_button_pressed()?;
-        let boot_btn = Input::new(self.boot_btn.reborrow(), InputConfig::default().with_pull(Pull::Up));
+        let boot_btn = Input::new(
+            self.boot_btn.reborrow(),
+            InputConfig::default().with_pull(Pull::Up),
+        );
         input.buttons.boot = boot_btn.is_low();
         Ok(input)
     }

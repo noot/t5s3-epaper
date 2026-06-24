@@ -72,10 +72,14 @@ fn main() -> ! {
     sdcard
         .rename_file(SOURCE_FILE, RENAMED_FILE)
         .expect("to rename file");
-    assert!(!sdcard.exists(SOURCE_FILE).expect("to verify source removal"));
+    assert!(!sdcard
+        .exists(SOURCE_FILE)
+        .expect("to verify source removal"));
     assert!(sdcard.exists(RENAMED_FILE).expect("to verify renamed file"));
     assert_eq!(
-        sdcard.read_file(RENAMED_FILE).expect("to read renamed file"),
+        sdcard
+            .read_file(RENAMED_FILE)
+            .expect("to read renamed file"),
         b"hello world"
     );
 

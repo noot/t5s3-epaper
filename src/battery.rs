@@ -40,10 +40,10 @@ where
     }
 
     /// Read the current voltage of the battery
-    pub fn read(&mut self) -> f32 {
+    pub fn read(&mut self) -> crate::Result<f32> {
         let v = nb::block!(self.adc.read_oneshot(&mut self.adc_pin))
-            .expect("to read oneshot from adc");
+            .map_err(|_| crate::Error::AdcRead)?;
 
-        (((v as f32) * 2.0) / 1000.0) * self.correction_factor
+        Ok((((v as f32) * 2.0) / 1000.0) * self.correction_factor)
     }
 }

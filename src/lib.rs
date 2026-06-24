@@ -78,7 +78,8 @@
 //! }
 //! ```
 //!
-//! For small black-on-white UI regions, you can use the fast direct-update path:
+//! For small black-on-white UI regions, you can use the fast direct-update
+//! path:
 //!
 //! ```rust no_run
 //! use lilygo_t5s3paperpro::display::Rectangle;
@@ -123,6 +124,10 @@ pub enum Error {
     I2c(esp_hal::i2c::master::Error),
     /// Pass-through
     I2cConfig(esp_hal::i2c::master::ConfigError),
+    /// I8080 LCD interface configuration failed.
+    I8080(esp_hal::lcd_cam::lcd::i8080::ConfigError),
+    /// ADC oneshot read failed.
+    AdcRead,
     /// Provided pixel coordinates exceed the display boundary.
     OutOfBounds,
     /// Provided color exceeds the allowed range of 0x0 - 0x0F
@@ -139,6 +144,28 @@ pub enum Error {
     MissingRmtChannel,
     /// Touch controller initialization failed.
     TouchInitFailed,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Rmt(e) => write!(f, "RMT error: {e:?}"),
+            Self::Dma(e) => write!(f, "DMA error: {e:?}"),
+            Self::DmaBuffer(e) => write!(f, "DMA buffer error: {e:?}"),
+            Self::I2c(e) => write!(f, "I2C error: {e:?}"),
+            Self::I2cConfig(e) => write!(f, "I2C configuration error: {e:?}"),
+            Self::I8080(e) => write!(f, "I8080 LCD configuration error: {e:?}"),
+            Self::AdcRead => write!(f, "ADC oneshot read failed"),
+            Self::OutOfBounds => write!(f, "pixel coordinates exceed display boundary"),
+            Self::InvalidColor => write!(f, "color exceeds allowed range of 0x0-0x0F"),
+            Self::PowerTimeout => write!(f, "timed out waiting for power supply ready"),
+            Self::MissingI8080 => write!(f, "LCD peripheral handle unexpectedly unavailable"),
+            Self::MissingDmaBuffer => write!(f, "DMA buffer unexpectedly unavailable"),
+            Self::MissingRmtPin => write!(f, "RMT output pin unexpectedly unavailable"),
+            Self::MissingRmtChannel => write!(f, "RMT channel unexpectedly unavailable"),
+            Self::TouchInitFailed => write!(f, "touch controller initialization failed"),
+        }
+    }
 }
 
 type Result<T> = core::result::Result<T, Error>;

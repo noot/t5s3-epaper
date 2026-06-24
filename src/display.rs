@@ -167,7 +167,8 @@ impl<'a> Display<'a> {
         Ok(self.epd.battery_voltage_mv()? as f32 / 1000.0)
     }
 
-    /// Read the battery state of charge percentage from the on-board BQ27220 fuel gauge.
+    /// Read the battery state of charge percentage from the on-board BQ27220
+    /// fuel gauge.
     pub fn battery_percentage(&mut self) -> Result<u16> {
         self.epd.battery_state_of_charge()
     }
@@ -246,7 +247,8 @@ impl<'a> Display<'a> {
         debug!("display flush");
         self.draw(mode)?;
         self.tainted_rows.fill(0);
-        self.previous_framebuffer.copy_from_slice(&*self.framebuffer);
+        self.previous_framebuffer
+            .copy_from_slice(&*self.framebuffer);
         self.framebuffer.fill(0xFF);
         Ok(())
     }
@@ -297,11 +299,7 @@ impl<'a> Display<'a> {
 
         debug!("display flush partial fast");
         self.draw_partial_du(area)?;
-        copy_rect(
-            &mut self.previous_framebuffer,
-            &self.framebuffer,
-            area,
-        );
+        copy_rect(&mut self.previous_framebuffer, &self.framebuffer, area);
         self.framebuffer.fill(0xFF);
         self.tainted_rows.fill(0);
         Ok(())
@@ -550,11 +548,7 @@ fn update_lut(conversion_lut: &mut [u8], k: usize, mode: DrawMode) {
             conversion_lut[l + p] &= 0xCF
         }
     }
-    for entry in conversion_lut
-        .iter_mut()
-        .take((k + 1) << 12)
-        .skip(k << 12)
-    {
+    for entry in conversion_lut.iter_mut().take((k + 1) << 12).skip(k << 12) {
         *entry &= 0x3F;
     }
 }
@@ -615,21 +609,23 @@ fn nibble_at(line: &[u8], x: usize) -> u8 {
 
 fn fill_rect(framebuffer: &mut [u8; FRAMEBUFFER_SIZE], area: Rectangle, color: u8) {
     let packed = (color << 4) | color;
+    let full_width = area.x == 0 && area.width == Display::WIDTH;
     for y in area.y..area.y + area.height {
         let start = y as usize * LINE_BYTES_4BPP;
         let end = start + LINE_BYTES_4BPP;
         let row = &mut framebuffer[start..end];
-        for x in area.x..area.x + area.width {
-            let index = x as usize / 2;
-            let value = row[index];
-            row[index] = if x % 2 == 0 {
-                (value & 0xF0) | color
-            } else {
-                (value & 0x0F) | (color << 4)
-            };
-        }
-        if area.x == 0 && area.width == Display::WIDTH {
+        if full_width {
             row.fill(packed);
+        } else {
+            for x in area.x..area.x + area.width {
+                let index = x as usize / 2;
+                let value = row[index];
+                row[index] = if x % 2 == 0 {
+                    (value & 0xF0) | color
+                } else {
+                    (value & 0x0F) | (color << 4)
+                };
+            }
         }
     }
 }
