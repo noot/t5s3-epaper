@@ -98,6 +98,7 @@
 extern crate alloc;
 
 pub mod display;
+pub mod frontlight;
 pub mod input;
 pub mod power;
 pub mod rtc;
@@ -106,6 +107,9 @@ pub mod touchscreen;
 
 #[cfg(feature = "embedded-graphics")]
 pub mod graphics;
+
+#[cfg(feature = "gps")]
+pub mod gps;
 
 mod battery;
 mod ed047tc1;
@@ -174,6 +178,7 @@ pub use crate::{
     battery::Battery,
     display::{Display, DrawMode},
     ed047tc1::PinConfig,
+    frontlight::FrontLight,
     input::{Buttons, InputState},
     power::WakeStatus,
     rtc::Clock,
@@ -217,6 +222,18 @@ macro_rules! sdcard_pin_config {
             mosi: $name.GPIO13,
             sclk: $name.GPIO14,
             cs: $name.GPIO12,
+        }
+    }};
+}
+
+/// Convenience macro to build the GPS pin config struct.
+#[cfg(feature = "gps")]
+#[macro_export]
+macro_rules! gps_pin_config {
+    ($name:expr) => {{
+        lilygo_t5s3paperpro::gps::PinConfig {
+            tx: $name.GPIO43,
+            rx: $name.GPIO44,
         }
     }};
 }
