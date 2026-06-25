@@ -21,6 +21,7 @@ log = { version = "0.4.28" }
 embedded-hal = "1.0.0"
 embedded-hal-bus = "0.3.0"
 embedded-sdmmc = { version = "0.9.0", default-features = false, features = ["log"] }
+nmea = { version = "0.7", default-features = false, features = ["GNSS", "other"], optional = true }
 
 [dev-dependencies]
 esp-println = { version = "0.16.1", features = ["esp32s3", "log-04"] }
@@ -51,3 +52,5 @@ overflow-checks = false
 default = ["embedded-graphics"]
 
 embedded-graphics = ["embedded-graphics-core"]
+gps = ["nmea"]
+lora = []
