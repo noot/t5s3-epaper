@@ -326,10 +326,17 @@ impl<'a> ConfigWriter<'a> {
             return Err(crate::Error::TouchInitFailed);
         }
 
-        self.touch_resolution = (
-            self.touch_read_u16(GT911_X_RESOLUTION)?,
-            self.touch_read_u16(GT911_Y_RESOLUTION)?,
-        );
+        let x_res = self.touch_read_u16(GT911_X_RESOLUTION)?;
+        let y_res = self.touch_read_u16(GT911_Y_RESOLUTION)?;
+        self.touch_resolution = if x_res == 0 && y_res == 0 {
+            debug!("touch init: resolution registers are zero, using default 540x960");
+            (
+                crate::display::Display::HEIGHT,
+                crate::display::Display::WIDTH,
+            )
+        } else {
+            (x_res, y_res)
+        };
         self.touch_set_interrupt_mode_low_level_query()?;
         debug!(
             "touch init: resolution={}x{}",

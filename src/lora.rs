@@ -610,7 +610,10 @@ pub enum Error {
     PayloadTooLong(usize),
     /// A register written during the self-check did not read back correctly,
     /// indicating the SPI link or BUSY handshake is not working.
-    CommsCheck { expected: u16, got: u16 },
+    CommsCheck {
+        expected: u16,
+        got: u16,
+    },
 }
 
 impl core::fmt::Display for Error {
