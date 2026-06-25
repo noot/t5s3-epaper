@@ -7,6 +7,7 @@ extern crate lilygo_t5s3paperpro;
 use core::fmt::Write as _;
 
 use embedded_graphics::{
+    image::Image,
     mono_font::{
         ascii::{FONT_6X10, FONT_9X15, FONT_9X18_BOLD},
         MonoTextStyle,
@@ -18,9 +19,18 @@ use embedded_graphics::{
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use esp_backtrace as _;
 use esp_hal::{delay::Delay, main};
-use lilygo_t5s3paperpro::{display::DisplayRotation, pin_config, Display, DrawMode, FrontLight};
+use lilygo_t5s3paperpro::{
+    display::DisplayRotation,
+    pin_config,
+    sdcard_pin_config,
+    Display,
+    DrawMode,
+    FrontLight,
+    SdCard,
+};
 #[cfg(feature = "gps")]
 use lilygo_t5s3paperpro::{gps::Gps, gps_pin_config};
+use tinybmp::Bmp;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -50,6 +60,9 @@ const SLEEP_BTN_X: i32 = 160;
 const SLEEP_BTN_Y: i32 = 420;
 const SLEEP_BTN_W: u32 = 220;
 const SLEEP_BTN_H: u32 = 90;
+
+// 540x960 grayscale BMP on the SD card root, shown as the sleep screensaver
+const WALLPAPER_PATH: &str = "/WALL1.BMP";
 
 // loop ticks between GPS readout refreshes (~50ms per tick)
 #[cfg(feature = "gps")]
@@ -708,6 +721,26 @@ fn draw_screensaver(display: &mut Display, pct: u16) {
         .ok();
 }
 
+// load the wallpaper bitmap from the SD card and draw it full-screen. returns
+// false if the card, file, or bitmap is missing or unreadable so the caller can
+// fall back to the drawn screensaver.
+fn show_wallpaper<'d>(
+    display: &mut Display,
+    spi: esp_hal::peripherals::SPI2<'d>,
+    pins: lilygo_t5s3paperpro::sdcard::PinConfig<'d>,
+) -> bool {
+    let Ok(sdcard) = SdCard::new(pins, spi) else {
+        return false;
+    };
+    let Ok(bytes) = sdcard.read_file(WALLPAPER_PATH) else {
+        return false;
+    };
+    let Ok(bmp) = Bmp::<Gray4>::from_slice(&bytes) else {
+        return false;
+    };
+    Image::new(&bmp, Point::zero()).draw(display).is_ok()
+}
+
 // ── main ────────────────────────────────────────────────────────────
 #[main]
 fn main() -> ! {
@@ -944,9 +977,16 @@ fn main() -> ! {
     unsafe {
         LAST_SCREEN = current_screen.to_index();
     }
-    let pct = display.battery_percentage().unwrap_or(0);
     display.clear().ok();
-    draw_screensaver(&mut display, pct);
+    // show the SD-card wallpaper if present, otherwise the drawn screensaver.
+    if !show_wallpaper(
+        &mut display,
+        peripherals.SPI2,
+        sdcard_pin_config!(peripherals),
+    ) {
+        let pct = display.battery_percentage().unwrap_or(0);
+        draw_screensaver(&mut display, pct);
+    }
     display.flush(DrawMode::BlackOnWhite).expect("to flush");
     display.deep_sleep(peripherals.LPWR, None)
 }
