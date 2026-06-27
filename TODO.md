@@ -46,3 +46,7 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [ ] pull now playing from music server (see waveshare-epaper repo)
 - [ ] pull weather data and display on ui page
 - [ ] pull home environment data (temp, humidity, co2)
+
+# bug fixes
+
+- [ ] sleep doesn't properly deep sleep - battery still drains quite a lot
