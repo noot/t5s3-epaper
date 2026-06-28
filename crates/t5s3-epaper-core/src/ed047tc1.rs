@@ -205,9 +205,14 @@ impl<'a> ConfigWriter<'a> {
         if !self.touch_initialized {
             return Ok(());
         }
-        // GT911 sits on the always-on 3.3 V rail and keeps scanning until told
-        // to sleep; 0x05 to the command register drops it to standby. A hardware
-        // reset (see `touch_reset_for_address`) wakes it on the next boot.
+        // GT911 sits on the always-on 3.3 V rail and keeps scanning (~3-4 mA)
+        // until told to sleep. It only latches the 0x05 sleep command with INT
+        // held low, so assert INT first. A hardware reset on the next boot
+        // (see `touch_reset_for_address`) wakes it.
+        self.touch_int.set_low();
+        self.touch_int.set_output_enable(true);
+        self.touch_int.set_input_enable(false);
+        busy_delay(30_000);
         self.write_register16(self.touch_addr, GT911_COMMAND, &[GT911_CMD_SLEEP])
     }
 
