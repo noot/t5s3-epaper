@@ -6,7 +6,7 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
+readme = "README.md"
 categories = ["embedded", "no-std"]
 keywords = ["epd", "lilygo", "esp-hal", "ED047TC1", "embedded-graphics"]
 

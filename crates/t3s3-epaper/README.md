@@ -21,27 +21,28 @@ The examples target `xtensa-esp32s3-none-elf` and need the Espressif Rust toolch
   espup install
   source ~/export-esp.sh   # adds the esp toolchain + xtensa GCC to your env
   ```
-  (`rust-toolchain.toml` already pins `channel = "esp"`.)
+  (the workspace root pins `channel = "esp"` in `rust-toolchain.toml`.)
 - [`espflash`](https://github.com/esp-rs/espflash) for flashing and monitoring:
   ```bash
   cargo install espflash
   ```
 
-The target, runner (`espflash flash --monitor`) and `build-std` are configured in
-`.cargo/config.toml`, so the `cargo run --example` commands below just work once
-the toolchain is installed and the board is plugged in.
+The target, runner and `build-std` are configured at the workspace root
+(`.cargo/config.toml`), and the `linkall.x` linker script is supplied by this
+crate's `build.rs`, so the `cargo run --example` commands below just work once the
+toolchain is installed and the board is plugged in.
 
-## eunning the examples
+## running the examples
 
 Plug the board in over USB, then flash one of the examples. Each builds, flashes,
 and opens a serial monitor:
 
 ```bash
-cargo run --example display            # draw text + a partial-update demo on the e-paper
-cargo run --example tx                 # send an incrementing LoRa packet every ~3s
-cargo run --example rx                 # print + display every received packet (with RSSI/SNR)
-cargo run --release --example ble      # BLE <-> LoRa bridge (drive with tools/ble.py)
-cargo run --example wifi_lora_bridge   # Wi-Fi <-> LoRa bridge with a web UI
+cargo run -p t3s3-epaper --example display            # draw text + a partial-update demo on the e-paper
+cargo run -p t3s3-epaper --example tx                 # send an incrementing LoRa packet every ~3s
+cargo run -p t3s3-epaper --example rx                 # print + display every received packet (with RSSI/SNR)
+just ble                                              # BLE ⇄ LoRa bridge (drive with tools/ble.py) — see below
+cargo run -p t3s3-epaper --example wifi_lora_bridge   # Wi-Fi ⇄ LoRa bridge with a web UI
 ```
 
 ### ble
@@ -50,8 +51,14 @@ The board advertises a Nordic UART Service as `T3S3-Msg` and bridges a BLE centr
 to the LoRa radio, mirroring both directions to the e-paper. Drive it from a host
 with `tools/ble.py` (a `uv` script): `--send` a message, `--listen` for incoming
 packets, or `--interact` for a REPL. See the `examples/ble.rs` module docs for the
-service UUIDs and the dual-core task placement. Build `--release`: esp-radio's
-scheduling is timing-sensitive.
+service UUIDs and the dual-core task placement.
+
+Run it with `just ble` from the workspace root — esp-radio's scheduling is
+timing-sensitive, so the recipe sets `ESP_RTOS_CONFIG_TICK_RATE_HZ=1000` (a 1 ms
+scheduler tick) so the radio thread can service advertising events on time. The
+workspace dev profile already builds `esp-hal`/`esp-radio`/`esp-rtos` at
+`opt-level = 3`, so a plain `just ble` (debug) build is enough; the equivalent is
+`ESP_RTOS_CONFIG_TICK_RATE_HZ=1000 cargo run -p t3s3-epaper --example ble`.
 
 ### wifi_lora_bridge
 
