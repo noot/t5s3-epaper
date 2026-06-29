@@ -10,6 +10,66 @@ use crate::{
     error::Error,
 };
 
+/// A lazily-read EPUB: the compressed archive bytes plus its resolved spine and
+/// metadata. Chapters are parsed one at a time via [`Epub::chapter`] so a whole
+/// book is never resident in memory at once.
+pub struct Epub {
+    bytes: Vec<u8>,
+    spine: Vec<String>,
+    meta: Meta,
+}
+
+impl Epub {
+    /// Read an EPUB's container and OPF package, taking ownership of its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the archive, its container, or its OPF package
+    /// cannot be read.
+    pub fn open(bytes: Vec<u8>) -> Result<Self, Error> {
+        let (spine, meta) = {
+            let archive = zip::Archive::open(&bytes)?;
+            let container = archive.read("META-INF/container.xml")?;
+            let opf_path = container::opf_path(&container)?;
+            let package = opf::parse(&archive.read(&opf_path)?)?;
+            let base = dir_of(&opf_path);
+            let spine = package
+                .spine_hrefs
+                .iter()
+                .map(|href| resolve(base, href))
+                .collect();
+            (spine, Meta::new(package.title, package.author))
+        };
+        Ok(Self { bytes, spine, meta })
+    }
+
+    #[must_use]
+    pub fn chapter_count(&self) -> usize {
+        self.spine.len()
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
+    /// Inflate and parse a single spine item into a [`Chapter`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingEntry`] if `index` is out of range, or a parse
+    /// error if the spine item cannot be read or parsed.
+    pub fn chapter(&self, index: usize) -> Result<Chapter, Error> {
+        let href = self
+            .spine
+            .get(index)
+            .ok_or_else(|| Error::MissingEntry(format!("spine item {index}")))?;
+        let archive = zip::Archive::open(&self.bytes)?;
+        let blocks = xhtml::parse(&archive.read(href)?)?;
+        Ok(Chapter::new(None, blocks))
+    }
+}
+
 /// Parse the bytes of an `.epub` file into a [`Document`], one chapter per
 /// spine item in reading order.
 ///
@@ -19,33 +79,20 @@ use crate::{
 /// cannot be read, or [`Error::Empty`] if no spine item yielded any text.
 /// Individual spine items that are missing or fail to parse are skipped.
 pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
-    let archive = zip::Archive::open(bytes)?;
-    let container = archive.read("META-INF/container.xml")?;
-    let opf_path = container::opf_path(&container)?;
-    let package = opf::parse(&archive.read(&opf_path)?)?;
-    let base = dir_of(&opf_path);
-
+    let epub = Epub::open(bytes.to_vec())?;
     let mut chapters = Vec::new();
-    for href in &package.spine_hrefs {
-        let path = resolve(base, href);
-        let Ok(data) = archive.read(&path) else {
-            continue;
-        };
-        let Ok(blocks) = xhtml::parse(&data) else {
-            continue;
-        };
-        if !blocks.is_empty() {
-            chapters.push(Chapter::new(None, blocks));
+    for index in 0..epub.chapter_count() {
+        if let Ok(chapter) = epub.chapter(index) {
+            if !chapter.is_empty() {
+                chapters.push(chapter);
+            }
         }
     }
 
     if chapters.is_empty() {
         return Err(Error::Empty);
     }
-    Ok(Document::new(
-        Meta::new(package.title, package.author),
-        chapters,
-    ))
+    Ok(Document::new(epub.meta().clone(), chapters))
 }
 
 fn dir_of(path: &str) -> &str {

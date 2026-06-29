@@ -10,7 +10,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
-use epub_reader::{parse_epub, parse_markdown, parse_txt, Block, Document, Span, Style};
+use epub_reader::{parse_markdown, parse_txt, Block, Document, Epub, Span, Style};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use t5s3_epaper_core::{
     sdcard::{Error, PinConfig},
@@ -41,12 +41,10 @@ struct Segment {
 }
 
 // a laid-out display line. heights drive pagination; `Blank` is the gap between
-// paragraphs and around headings; `PageBreak` forces the next chapter onto a
-// fresh page and renders nothing.
+// paragraphs and around headings.
 enum Line {
     Blank,
     Rule,
-    PageBreak,
     Text(Vec<Segment>),
     Heading(Vec<Segment>),
 }
@@ -54,23 +52,88 @@ enum Line {
 impl Line {
     fn height(&self) -> i32 {
         match self {
-            Line::PageBreak => 0,
             Line::Blank => BLANK_H,
             _ => LINE_H,
         }
     }
 }
 
-// a paginated document ready to render: every wrapped display line plus the
-// line index each page starts at.
+// where chapters come from. txt/md parse fully up front (they are small and
+// single-chapter); epub keeps only its bytes + spine resident and parses each
+// chapter on demand, so a whole book is never in memory at once.
+enum Source {
+    Memory(Document),
+    Book(Epub),
+}
+
+// an open book positioned at one page. only the current chapter is laid out at
+// a time; turning past a chapter boundary parses and paginates the neighbour.
 pub(crate) struct ReaderDoc {
+    source: Source,
+    chapter_count: usize,
+    chapter: usize,
     lines: Vec<Line>,
     pages: Vec<usize>,
+    page: usize,
 }
 
 impl ReaderDoc {
-    pub(crate) fn page_count(&self) -> usize {
-        self.pages.len()
+    fn new(source: Source, chapter: usize, page: usize) -> Self {
+        let chapter_count = match &source {
+            Source::Memory(doc) => doc.chapters().len().max(1),
+            Source::Book(epub) => epub.chapter_count().max(1),
+        };
+        let chapter = chapter.min(chapter_count.saturating_sub(1));
+        let lines = layout_chapter(&source, chapter);
+        let pages = paginate(&lines);
+        let page = page.min(pages.len().saturating_sub(1));
+        Self {
+            source,
+            chapter_count,
+            chapter,
+            lines,
+            pages,
+            page,
+        }
+    }
+
+    fn load_chapter(&mut self, chapter: usize, at_end: bool) {
+        self.chapter = chapter;
+        self.lines = layout_chapter(&self.source, chapter);
+        self.pages = paginate(&self.lines);
+        self.page = if at_end {
+            self.pages.len().saturating_sub(1)
+        } else {
+            0
+        };
+    }
+
+    pub(crate) fn next_page(&mut self) -> bool {
+        if self.page + 1 < self.pages.len() {
+            self.page += 1;
+            true
+        } else if self.chapter + 1 < self.chapter_count {
+            self.load_chapter(self.chapter + 1, false);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn prev_page(&mut self) -> bool {
+        if self.page > 0 {
+            self.page -= 1;
+            true
+        } else if self.chapter > 0 {
+            self.load_chapter(self.chapter - 1, true);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn position(&self) -> (usize, usize) {
+        (self.chapter, self.page)
     }
 }
 
@@ -89,44 +152,47 @@ pub(crate) fn is_reader(name: &str) -> bool {
     })
 }
 
-// read a supported text file from the card and lay it out into pages. mounts
+// read a supported file from the card and open it at `chapter`/`page`. mounts
 // the card the same self-contained way as the file browser. returns a short
 // human-readable message on failure so the caller can show why it failed.
-pub(crate) fn load_document(path: &str) -> Result<ReaderDoc, String> {
+pub(crate) fn load_document(path: &str, chapter: usize, page: usize) -> Result<ReaderDoc, String> {
     let (_lora_cs, card) = mount().map_err(|e| format!("SD init failed: {e:?}"))?;
     let bytes = card
         .read_file(path)
         .map_err(|e| format!("read failed: {e:?}"))?;
 
     let ext = path.rsplit_once('.').map_or("", |(_, ext)| ext);
-    let parsed = if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
-        parse_markdown(&bytes)
-    } else if ext.eq_ignore_ascii_case("txt") {
-        parse_txt(&bytes)
-    } else if ext.eq_ignore_ascii_case("epub") {
-        parse_epub(&bytes)
+    let source = if ext.eq_ignore_ascii_case("epub") {
+        Source::Book(Epub::open(bytes).map_err(|e| {
+            esp_println::println!("reader: open {path} failed: {e}");
+            format!("parse failed: {e}")
+        })?)
     } else {
-        return Err(format!("unsupported file type: .{ext}"));
+        let parsed = if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
+            parse_markdown(&bytes)
+        } else if ext.eq_ignore_ascii_case("txt") {
+            parse_txt(&bytes)
+        } else {
+            return Err(format!("unsupported file type: .{ext}"));
+        };
+        Source::Memory(parsed.map_err(|e| {
+            esp_println::println!("reader: parse {path} failed: {e}");
+            format!("parse failed: {e}")
+        })?)
     };
-    let doc = parsed.map_err(|e| {
-        esp_println::println!("reader: parse {path} failed: {e}");
-        format!("parse failed: {e}")
-    })?;
 
-    let lines = layout(&doc);
-    let pages = paginate(&lines);
-    Ok(ReaderDoc { lines, pages })
+    Ok(ReaderDoc::new(source, chapter, page))
 }
 
-pub(crate) fn draw_page(display: &mut Display, doc: &ReaderDoc, page: usize) {
-    let page = page.min(doc.pages.len().saturating_sub(1));
-    let start = doc.pages[page];
+pub(crate) fn draw(display: &mut Display, doc: &ReaderDoc) {
+    let page = doc.page.min(doc.pages.len().saturating_sub(1));
+    let start = doc.pages.get(page).copied().unwrap_or(0);
     let end = doc.pages.get(page + 1).copied().unwrap_or(doc.lines.len());
 
     let mut y = CONTENT_TOP + 18;
     for line in &doc.lines[start..end] {
         match line {
-            Line::Blank | Line::PageBreak => {}
+            Line::Blank => {}
             Line::Rule => {
                 Rectangle::new(
                     Point::new(MARGIN_X, y - 8),
@@ -142,7 +208,17 @@ pub(crate) fn draw_page(display: &mut Display, doc: &ReaderDoc, page: usize) {
         y += line.height();
     }
 
-    let footer = format!("< prev    {} / {}    next >", page + 1, doc.pages.len());
+    let footer = if doc.chapter_count > 1 {
+        format!(
+            "< ch {}/{}    p {}/{} >",
+            doc.chapter + 1,
+            doc.chapter_count,
+            page + 1,
+            doc.pages.len()
+        )
+    } else {
+        format!("< prev    {} / {}    next >", page + 1, doc.pages.len())
+    };
     Text::with_alignment(
         &footer,
         Point::new(SCREEN_W / 2, FOOTER_Y),
@@ -163,29 +239,33 @@ pub(crate) fn tap_zone(sx: i32, sy: i32) -> Tap {
     }
 }
 
-pub(crate) fn save_progress(path: &str, page: usize) {
+pub(crate) fn save_progress(path: &str, chapter: usize, page: usize) {
     let (_lora_cs, card) = match mount() {
         Ok(card) => card,
         Err(_) => return,
     };
     card.create_dir_all(PROGRESS_DIR).ok();
-    if let Err(e) = card.write_file(&progress_path(path), format!("{page}").as_bytes()) {
+    let body = format!("{chapter} {page}");
+    if let Err(e) = card.write_file(&progress_path(path), body.as_bytes()) {
         esp_println::println!("reader: save progress failed: {e:?}");
     }
 }
 
-pub(crate) fn load_progress(path: &str) -> usize {
+pub(crate) fn load_progress(path: &str) -> (usize, usize) {
     let (_lora_cs, card) = match mount() {
         Ok(card) => card,
-        Err(_) => return 0,
+        Err(_) => return (0, 0),
     };
-    match card.read_file(&progress_path(path)) {
-        Ok(bytes) => core::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .unwrap_or(0),
-        Err(_) => 0,
-    }
+    let Ok(bytes) = card.read_file(&progress_path(path)) else {
+        return (0, 0);
+    };
+    let parsed = core::str::from_utf8(&bytes).ok().and_then(|text| {
+        let mut parts = text.split_whitespace();
+        let chapter = parts.next()?.parse().ok()?;
+        let page = parts.next()?.parse().ok()?;
+        Some((chapter, page))
+    });
+    parsed.unwrap_or((0, 0))
 }
 
 fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, force_bold: bool) {
@@ -203,36 +283,50 @@ fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, for
     }
 }
 
-fn layout(doc: &Document) -> Vec<Line> {
+// lay out a single chapter's blocks into display lines. parsing the chapter
+// from an epub happens here, on demand, so only one chapter is resident.
+fn layout_chapter(source: &Source, chapter: usize) -> Vec<Line> {
+    match source {
+        Source::Memory(doc) => doc
+            .chapters()
+            .get(chapter)
+            .map(|c| layout_blocks(c.blocks()))
+            .unwrap_or_default(),
+        Source::Book(epub) => match epub.chapter(chapter) {
+            Ok(c) => layout_blocks(c.blocks()),
+            Err(e) => {
+                esp_println::println!("reader: chapter {chapter} failed: {e}");
+                Vec::new()
+            }
+        },
+    }
+}
+
+fn layout_blocks(blocks: &[Block]) -> Vec<Line> {
     let mut lines = Vec::new();
-    for (i, chapter) in doc.chapters().iter().enumerate() {
-        if i > 0 {
-            lines.push(Line::PageBreak);
-        }
-        for block in chapter.blocks() {
-            match block {
-                Block::Heading { spans, .. } => {
-                    if !lines.is_empty() {
-                        lines.push(Line::Blank);
-                    }
-                    for segments in wrap(spans) {
-                        lines.push(Line::Heading(segments));
-                    }
+    for block in blocks {
+        match block {
+            Block::Heading { spans, .. } => {
+                if !lines.is_empty() {
                     lines.push(Line::Blank);
                 }
-                Block::Paragraph(spans) => {
-                    for segments in wrap(spans) {
-                        lines.push(Line::Text(segments));
-                    }
-                    lines.push(Line::Blank);
+                for segments in wrap(spans) {
+                    lines.push(Line::Heading(segments));
                 }
-                Block::Rule => lines.push(Line::Rule),
-                Block::Image { href } => {
-                    lines.push(Line::Text(vec![Segment {
-                        text: format!("[image: {href}]"),
-                        bold: false,
-                    }]));
+                lines.push(Line::Blank);
+            }
+            Block::Paragraph(spans) => {
+                for segments in wrap(spans) {
+                    lines.push(Line::Text(segments));
                 }
+                lines.push(Line::Blank);
+            }
+            Block::Rule => lines.push(Line::Rule),
+            Block::Image { href } => {
+                lines.push(Line::Text(vec![Segment {
+                    text: format!("[image: {href}]"),
+                    bold: false,
+                }]));
             }
         }
     }
@@ -243,13 +337,6 @@ fn paginate(lines: &[Line]) -> Vec<usize> {
     let mut starts = vec![0];
     let mut height = 0;
     for (i, line) in lines.iter().enumerate() {
-        if matches!(line, Line::PageBreak) {
-            if height > 0 {
-                starts.push(i);
-                height = 0;
-            }
-            continue;
-        }
         let line_h = line.height();
         if height > 0 && height + line_h > CONTENT_H {
             starts.push(i);

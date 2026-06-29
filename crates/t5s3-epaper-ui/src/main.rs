@@ -110,7 +110,7 @@ use crate::{
             SENT_Y,
         },
         reader::{
-            draw_page,
+            draw as draw_reader,
             is_reader,
             load_document,
             load_progress,
@@ -297,7 +297,6 @@ async fn main(_spawner: Spawner) -> ! {
     // (re)loading from the card on the next pass (mirrors `files_dirty`).
     let mut reader_path = String::new();
     let mut reader_doc: Option<ReaderDoc> = None;
-    let mut reader_page: usize = 0;
     let mut reader_dirty = false;
     // why the open failed, shown on the reader screen when `reader_doc` is None.
     let mut reader_status = String::new();
@@ -400,7 +399,7 @@ async fn main(_spawner: Spawner) -> ! {
                 Screen::Reader => {
                     draw_back_button(&mut display);
                     match &reader_doc {
-                        Some(doc) => draw_page(&mut display, doc, reader_page),
+                        Some(doc) => draw_reader(&mut display, doc),
                         None => {
                             Text::with_alignment(
                                 "cannot open file",
@@ -475,7 +474,10 @@ async fn main(_spawner: Spawner) -> ! {
 
         if input.buttons.home && current_screen != Screen::Home {
             if current_screen == Screen::Reader {
-                save_progress(&reader_path, reader_page);
+                if let Some(doc) = &reader_doc {
+                    let (chapter, page) = doc.position();
+                    save_progress(&reader_path, chapter, page);
+                }
             }
             current_screen = Screen::Home;
             needs_redraw = true;
@@ -671,24 +673,20 @@ async fn main(_spawner: Spawner) -> ! {
                     }
                     Screen::Reader => {
                         if back_button_hit(sx, sy) {
-                            save_progress(&reader_path, reader_page);
+                            if let Some(doc) = &reader_doc {
+                                let (chapter, page) = doc.position();
+                                save_progress(&reader_path, chapter, page);
+                            }
                             current_screen = Screen::Files;
                             needs_redraw = true;
-                        } else if let Some(doc) = &reader_doc {
-                            match tap_zone(sx, sy) {
-                                Tap::Prev => {
-                                    if reader_page > 0 {
-                                        reader_page -= 1;
-                                        needs_redraw = true;
-                                    }
-                                }
-                                Tap::Next => {
-                                    if reader_page + 1 < doc.page_count() {
-                                        reader_page += 1;
-                                        needs_redraw = true;
-                                    }
-                                }
-                                Tap::None => {}
+                        } else if let Some(doc) = &mut reader_doc {
+                            let changed = match tap_zone(sx, sy) {
+                                Tap::Prev => doc.prev_page(),
+                                Tap::Next => doc.next_page(),
+                                Tap::None => false,
+                            };
+                            if changed {
+                                needs_redraw = true;
                             }
                         }
                     }
@@ -731,10 +729,9 @@ async fn main(_spawner: Spawner) -> ! {
         // the document's length.
         if current_screen == Screen::Reader && reader_dirty {
             reader_dirty = false;
-            match load_document(&reader_path) {
+            let (chapter, page) = load_progress(&reader_path);
+            match load_document(&reader_path, chapter, page) {
                 Ok(doc) => {
-                    reader_page =
-                        load_progress(&reader_path).min(doc.page_count().saturating_sub(1));
                     reader_doc = Some(doc);
                     reader_status.clear();
                 }
@@ -832,7 +829,10 @@ async fn main(_spawner: Spawner) -> ! {
     }
     // persist reading progress if we slept straight from the reader.
     if current_screen == Screen::Reader {
-        save_progress(&reader_path, reader_page);
+        if let Some(doc) = &reader_doc {
+            let (chapter, page) = doc.position();
+            save_progress(&reader_path, chapter, page);
+        }
     }
     // remember where we were so wake lands on the same screen. single-threaded,
     // so writing the RTC-backed static is sound.
