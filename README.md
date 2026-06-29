@@ -40,8 +40,18 @@ and opens a serial monitor:
 cargo run --example display            # draw text + a partial-update demo on the e-paper
 cargo run --example tx                 # send an incrementing LoRa packet every ~3s
 cargo run --example rx                 # print + display every received packet (with RSSI/SNR)
+cargo run --release --example ble      # BLE <-> LoRa bridge (drive with tools/ble.py)
 cargo run --example wifi_lora_bridge   # Wi-Fi <-> LoRa bridge with a web UI
 ```
+
+### ble
+
+The board advertises a Nordic UART Service as `T3S3-Msg` and bridges a BLE central
+to the LoRa radio, mirroring both directions to the e-paper. Drive it from a host
+with `tools/ble.py` (a `uv` script): `--send` a message, `--listen` for incoming
+packets, or `--interact` for a REPL. See the `examples/ble.rs` module docs for the
+service UUIDs and the dual-core task placement. Build `--release`: esp-radio's
+scheduling is timing-sensitive.
 
 ### wifi_lora_bridge
 

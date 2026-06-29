@@ -15,18 +15,34 @@ embedded-graphics-core = "0.4"
 esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.5", features = ["esp32s3"] }
 esp-backtrace = { version = "0.19", features = ["esp32s3", "panic-handler", "println"] }
-esp-println = { version = "0.17", features = ["esp32s3"] }
+esp-println = { version = "0.17", features = ["esp32s3", "log-04"] }
 embedded-hal-bus = "0.3"
 embedded-graphics = "0.8"
 
-# wifi soft-ap for the wifi_lora_bridge example. esp-radio (formerly esp-wifi) is the
-# wifi controller/driver, esp-rtos provides the preemptive scheduler the radio
-# firmware requires, and smoltcp is the TCP/IP stack we drive directly (the AP
-# bring-up, a small DHCP server and the HTTP server all live in the example).
-# this corner of the ecosystem churns — re-pin if cargo can't resolve.
-esp-radio = { version = "0.18", features = ["esp32s3", "wifi", "unstable"] }
-esp-rtos = { version = "0.3", features = ["esp32s3", "esp-radio"] }
+# radio stack shared by the `ble` and `wifi_lora_bridge` examples. esp-radio is
+# the wifi/ble controller and esp-rtos the preemptive scheduler the radio
+# firmware requires; the feature sets are the union the two examples need (`ble`
+# for the NUS bridge, `wifi` for the soft-AP bridge). esp-radio 0.18 + esp-rtos
+# 0.3 are the esp-hal 1.1 line. this corner of the ecosystem churns — re-pin if
+# cargo can't resolve.
+esp-radio = { version = "0.18", features = ["esp32s3", "ble", "wifi", "unstable", "log-04"] }
+esp-rtos = { version = "0.3", features = ["esp32s3", "embassy", "esp-radio", "esp-alloc"] }
 esp-alloc = "0.10"
+
+# `ble` example (trouble-host BLE stack): these must be a matched set — esp-radio
+# and trouble-host bridge through bt-hci 0.8, and the gatt macros expand to
+# `embassy_sync::` paths, so it's a direct dep. heapless must match trouble-host's
+# (0.9), or its AsGatt impl for Vec<u8, N> won't apply to ours.
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+embassy-sync = "0.7"
+static_cell = "2"
+trouble-host = { version = "0.6", features = ["default-packet-pool-mtu-255"] }
+heapless = "0.9"
+
+# `wifi_lora_bridge` example: smoltcp is the TCP/IP stack the example drives
+# directly (AP bring-up, a small DHCP server, and the HTTP server).
 smoltcp = { version = "0.13", default-features = false, features = [
     "alloc",
     "medium-ethernet",
