@@ -24,31 +24,33 @@ pub(crate) const MONTH_NAMES: [&str; 12] = [
     "December",
 ];
 
-// read the RTC and return (hours, minutes) of local time, or None if it has
-// not been set to a real wall-clock time yet (i.e. no successful NTP sync).
-pub(crate) fn status_time(clock: &mut Clock) -> Option<(u32, u32)> {
+// the RTC holds UTC; below this (~year 2020) it is just counting up from boot,
+// unsynced. apply the timezone offset to a synced UTC second count, or None if
+// it has not been synced to a real wall-clock time yet.
+fn local_secs(clock: &mut Clock, offset_hours: i8) -> Option<u64> {
     let secs = clock.now_us() / 1_000_000;
-    // ~year 2020; below this the RTC is just counting up from boot, unsynced.
     if secs > 1_600_000_000 {
-        let sod = (secs % 86_400) as u32;
-        Some((sod / 3600, (sod % 3600) / 60))
+        Some((secs as i64 + i64::from(offset_hours) * 3600).max(0) as u64)
     } else {
         None
     }
 }
 
-// read the RTC and return (day-of-week, year, month, day) of local time, or
-// None if it has not been synced to a real wall-clock time yet.
-pub(crate) fn status_date(clock: &mut Clock) -> Option<(usize, i64, u32, u32)> {
-    let secs = clock.now_us() / 1_000_000;
-    if secs > 1_600_000_000 {
-        let days = (secs / 86_400) as i64;
-        let (year, month, day) = civil_from_days(days);
-        let dow = ((days + 4) % 7) as usize; // 1970-01-01 was a Thursday; 0 = Sunday
-        Some((dow, year, month, day))
-    } else {
-        None
-    }
+// return (hours, minutes) of local time, or None before the first NTP sync.
+pub(crate) fn status_time(clock: &mut Clock, offset_hours: i8) -> Option<(u32, u32)> {
+    let local = local_secs(clock, offset_hours)?;
+    let sod = (local % 86_400) as u32;
+    Some((sod / 3600, (sod % 3600) / 60))
+}
+
+// return (day-of-week, year, month, day) of local time, or None before the
+// first NTP sync.
+pub(crate) fn status_date(clock: &mut Clock, offset_hours: i8) -> Option<(usize, i64, u32, u32)> {
+    let local = local_secs(clock, offset_hours)?;
+    let days = (local / 86_400) as i64;
+    let (year, month, day) = civil_from_days(days);
+    let dow = ((days + 4) % 7) as usize; // 1970-01-01 was a Thursday; 0 = Sunday
+    Some((dow, year, month, day))
 }
 
 // gregorian (year, month, day) from days since the unix epoch.

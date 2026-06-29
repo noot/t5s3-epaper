@@ -9,6 +9,7 @@ mod fmt;
 mod layout;
 mod pages;
 mod screen;
+mod settings;
 mod widgets;
 mod wifi;
 
@@ -110,9 +111,25 @@ use crate::{
             SENT_Y,
         },
         reader::{draw as draw_reader, is_reader, load_document, tap_zone, ReaderDoc, Tap},
+        settings::{
+            draw_settings_screen,
+            family_button_rect,
+            font_size_button_rect,
+            format_button_rect,
+            hit_test as settings_hit,
+            redraw_family,
+            redraw_font_size,
+            redraw_format,
+            redraw_spacing,
+            redraw_tz,
+            spacing_button_rect,
+            tz_value_rect,
+            Hit as SettingsHit,
+        },
         sleep::{draw_screensaver, draw_sleep_screen, show_wallpaper, sleep_now_hit},
     },
     screen::Screen,
+    settings::Settings,
     widgets::{
         back_button_hit,
         draw_back_button,
@@ -120,7 +137,7 @@ use crate::{
         draw_statusbar_time,
         statusbar_time_rect,
     },
-    wifi::{set_local_time, sync_time, RESYNC_INTERVAL_SECS},
+    wifi::{set_utc_time, sync_time, RESYNC_INTERVAL_SECS},
 };
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -135,6 +152,16 @@ static mut LAST_SCREEN: u8 = 0;
 // first sync of this power cycle.
 #[esp_hal::ram(unstable(rtc_fast, persistent))]
 pub(crate) static mut LAST_SYNC_UNIX: u64 = 0;
+
+// after a timezone or time-format change, repaint the status-bar clock so the
+// shown time reflects the new setting immediately; returns the minute now shown
+// so the once-a-minute tick stays in sync.
+fn refresh_statusbar_clock(display: &mut Display, clock: &mut Clock, settings: &Settings) -> u32 {
+    let now = status_time(clock, settings.tz_offset_hours);
+    draw_statusbar_time(display, now, settings.time_24h);
+    display.flush_partial_fast(statusbar_time_rect()).ok();
+    now.map_or(60, |(_, m)| m)
+}
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -165,6 +192,11 @@ async fn main(_spawner: Spawner) -> ! {
     let woke = t5s3_epaper_core::power::wake_status().woke_from_deep_sleep();
     let mut clock = Clock::new(peripherals.LPWR);
 
+    // user settings (timezone, time format, brightness, reader font size) read
+    // from the NVS flash partition; falls back to build-time defaults on first
+    // boot or if the stored blob is missing/invalid.
+    let mut settings = Settings::load();
+
     let mut display = Display::new(
         pin_config!(peripherals),
         peripherals.I2C0,
@@ -178,6 +210,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut light =
         FrontLight::new(peripherals.LEDC, peripherals.GPIO11).expect("to initialize front light");
+    light.set_brightness(settings.brightness);
 
     let delay = Delay::new();
     display.power_on().expect("to power on");
@@ -215,13 +248,6 @@ async fn main(_spawner: Spawner) -> ! {
         }
     }
 
-    // timezone offset (hours from UTC) from the TZ_OFFSET_HOURS build env (see
-    // .env); defaults to pacific daylight time. used for the initial sync and
-    // each periodic re-sync.
-    let offset_hours: i64 = option_env!("TZ_OFFSET_HOURS")
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(-7);
-
     // on a cold boot, sync the clock over wifi (best effort, with a timeout so
     // it still boots when offline), then the radio powers down. on wake the RTC
     // already holds the time, so we skip wifi for a fast resume.
@@ -237,7 +263,7 @@ async fn main(_spawner: Spawner) -> ! {
         display.flush(DrawMode::BlackOnWhite).expect("to flush");
 
         match sync_time(peripherals.WIFI).await {
-            Some(unix) => set_local_time(&mut clock, unix, offset_hours),
+            Some(unix) => set_utc_time(&mut clock, unix),
             None => esp_println::println!("clock: wifi/ntp sync failed, time unavailable"),
         }
     }
@@ -251,9 +277,11 @@ async fn main(_spawner: Spawner) -> ! {
         Screen::Home
     };
     let mut needs_redraw = true;
-    let mut brightness: u8 = 0;
+    let mut brightness: u8 = settings.brightness;
     // whether a finger is currently down, so each tap is handled once on press.
     let mut touch_active = false;
+    // whether the auxiliary button is currently held, so each press acts once.
+    let mut aux_active = false;
     let mut last_status_minute: u32 = 60;
     // time of the last clock sync, used to schedule periodic re-syncs.
     let mut last_resync_secs = clock.now_us() / 1_000_000;
@@ -302,15 +330,18 @@ async fn main(_spawner: Spawner) -> ! {
     loop {
         if needs_redraw {
             let pct = display.battery_percentage().unwrap_or(0);
-            let now = status_time(&mut clock);
+            let now = status_time(&mut clock, settings.tz_offset_hours);
 
             display.clear().ok();
             // the image viewer paints full-screen, so it skips the status bar.
             if current_screen != Screen::Image {
-                draw_status_bar(&mut display, pct, now);
+                draw_status_bar(&mut display, pct, now, settings.time_24h);
             }
             match current_screen {
-                Screen::Home => draw_home(&mut display, status_date(&mut clock)),
+                Screen::Home => draw_home(
+                    &mut display,
+                    status_date(&mut clock, settings.tz_offset_hours),
+                ),
                 Screen::Gps => {
                     let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
                     draw_back_button(&mut display);
@@ -411,6 +442,7 @@ async fn main(_spawner: Spawner) -> ! {
                         }
                     }
                 }
+                Screen::Settings => draw_settings_screen(&mut display, &settings),
             }
             display.flush(DrawMode::BlackOnWhite).expect("to flush");
             needs_redraw = false;
@@ -425,10 +457,10 @@ async fn main(_spawner: Spawner) -> ! {
 
         // tick the status-bar clock once a minute via a fast partial refresh.
         if !needs_redraw {
-            if let Some((h, m)) = status_time(&mut clock) {
+            if let Some((h, m)) = status_time(&mut clock, settings.tz_offset_hours) {
                 if m != last_status_minute {
                     last_status_minute = m;
-                    draw_statusbar_time(&mut display, Some((h, m)));
+                    draw_statusbar_time(&mut display, Some((h, m)), settings.time_24h);
                     display.flush_partial_fast(statusbar_time_rect()).ok();
                 }
             }
@@ -453,7 +485,7 @@ async fn main(_spawner: Spawner) -> ! {
             esp_println::println!("clock: periodic re-sync");
             let wifi = unsafe { esp_hal::peripherals::WIFI::steal() };
             if let Some(unix) = sync_time(wifi).await {
-                set_local_time(&mut clock, unix, offset_hours);
+                set_utc_time(&mut clock, unix);
             }
             last_resync_secs = clock.now_us() / 1_000_000;
             needs_redraw = true;
@@ -473,10 +505,24 @@ async fn main(_spawner: Spawner) -> ! {
             needs_redraw = true;
         }
 
-        // the auxiliary button sleeps from any screen; the current screen is
-        // restored on wake.
+        // the auxiliary button turns the page in the reader, and sleeps from any
+        // other screen (the current screen is restored on wake). edge-detected so
+        // holding it acts once.
         if input.buttons.auxiliary {
-            break;
+            if !aux_active {
+                aux_active = true;
+                if current_screen == Screen::Reader {
+                    if let Some(doc) = &mut reader_doc {
+                        if doc.next_page() {
+                            needs_redraw = true;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else {
+            aux_active = false;
         }
 
         // edge-detect touches: act only on the press (untouched -> touched) and
@@ -679,6 +725,55 @@ async fn main(_spawner: Spawner) -> ! {
                             }
                         }
                     }
+                    Screen::Settings => match settings_hit(sx, sy) {
+                        Some(SettingsHit::Back) => {
+                            current_screen = Screen::Home;
+                            needs_redraw = true;
+                        }
+                        Some(SettingsHit::TzMinus) => {
+                            settings.tz_offset_hours = (settings.tz_offset_hours - 1).max(-12);
+                            settings.save();
+                            redraw_tz(&mut display, settings.tz_offset_hours);
+                            display.flush_partial_fast(tz_value_rect()).ok();
+                            last_status_minute =
+                                refresh_statusbar_clock(&mut display, &mut clock, &settings);
+                        }
+                        Some(SettingsHit::TzPlus) => {
+                            settings.tz_offset_hours = (settings.tz_offset_hours + 1).min(14);
+                            settings.save();
+                            redraw_tz(&mut display, settings.tz_offset_hours);
+                            display.flush_partial_fast(tz_value_rect()).ok();
+                            last_status_minute =
+                                refresh_statusbar_clock(&mut display, &mut clock, &settings);
+                        }
+                        Some(SettingsHit::ToggleFormat) => {
+                            settings.time_24h = !settings.time_24h;
+                            settings.save();
+                            redraw_format(&mut display, settings.time_24h);
+                            display.flush_partial_fast(format_button_rect()).ok();
+                            last_status_minute =
+                                refresh_statusbar_clock(&mut display, &mut clock, &settings);
+                        }
+                        Some(SettingsHit::CycleFontSize) => {
+                            settings.reader_font_size = settings.reader_font_size.next();
+                            settings.save();
+                            redraw_font_size(&mut display, &settings);
+                            display.flush_partial_fast(font_size_button_rect()).ok();
+                        }
+                        Some(SettingsHit::CycleFontFamily) => {
+                            settings.reader_font_family = settings.reader_font_family.next();
+                            settings.save();
+                            redraw_family(&mut display, &settings);
+                            display.flush_partial_fast(family_button_rect()).ok();
+                        }
+                        Some(SettingsHit::CycleSpacing) => {
+                            settings.reader_line_spacing = settings.reader_line_spacing.next();
+                            settings.save();
+                            redraw_spacing(&mut display, &settings);
+                            display.flush_partial_fast(spacing_button_rect()).ok();
+                        }
+                        None => {}
+                    },
                     _ => {
                         if back_button_hit(sx, sy) {
                             current_screen = Screen::Home;
@@ -718,7 +813,7 @@ async fn main(_spawner: Spawner) -> ! {
         // the document's length.
         if current_screen == Screen::Reader && reader_dirty {
             reader_dirty = false;
-            match load_document(&reader_path) {
+            match load_document(&reader_path, settings.reader_style()) {
                 Ok(doc) => {
                     reader_doc = Some(doc);
                     reader_status.clear();
@@ -821,6 +916,9 @@ async fn main(_spawner: Spawner) -> ! {
             doc.save();
         }
     }
+    // persist the user's brightness so it is restored on the next boot.
+    settings.brightness = brightness;
+    settings.save();
     // remember where we were so wake lands on the same screen. single-threaded,
     // so writing the RTC-backed static is sound.
     unsafe {

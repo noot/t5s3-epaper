@@ -6,4 +6,5 @@ pub(crate) mod home;
 pub(crate) mod info;
 pub(crate) mod lora;
 pub(crate) mod reader;
+pub(crate) mod settings;
 pub(crate) mod sleep;

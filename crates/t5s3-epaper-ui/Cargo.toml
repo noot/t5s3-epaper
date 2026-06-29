@@ -18,6 +18,8 @@ epub-reader = { path = "../epub-reader" }
 esp-hal = { workspace = true }
 esp-alloc = { workspace = true }
 esp-bootloader-esp-idf = { workspace = true }
+esp-storage = { workspace = true }
+embedded-storage = { workspace = true }
 esp-radio = { workspace = true }
 esp-rtos = { workspace = true }
 embassy-executor = { workspace = true }

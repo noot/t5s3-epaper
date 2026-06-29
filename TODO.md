@@ -17,18 +17,21 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [ ] **BQ25896 full driver** — charge current config, charge status, input power path management (currently shutdown only)
 - [ ] **BQ27220 full driver** — current draw, temperature, state of health, remaining/full capacity (currently voltage + SOC only)
 - [x] LoRa user message (with keyboard) and broadcast
+- [ ] use power button to enter deep sleep / wake from deep sleep
 
 ### low priority / nice to have
 
 - [x] **WiFi** — via `esp-wifi` crate
 - [ ] **BLE** — via `esp-wifi` crate
 - [ ] **waveform LUT temperature compensation** — use TPS65185 temp sensor to select waveform table at draw time
+- [ ] join wifi network page/setting
 
 ## file handling and management
 - [x] sd card file browser in UI
 - [x] open bmp images in file browser
-- [ ] epub reader functionality
-- [ ] always-on lora receive functionality with unread notification icon
+- [x] epub/txt/markdown reader (lazy per-chapter epub parsing, JPEG/PNG image rendering with dithering, content-hashed resume)
+- [ ] reader: support more scripts — Greek, CJK, Hebrew, etc. currently render as `?` (need additional u8g2 fonts added to `pick_font` fallback chain)
+- [ ] reader: stream epub chapters from SD instead of holding the whole compressed file in PSRAM (for large/image-heavy books)
 
 ## GPS
 - [ ] cached map with location rendering
@@ -37,13 +40,19 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [ ] define message types (protos?)
 - [ ] auto send coordinates in one click
 - [ ] automatically calculate distance from remote peer when coordinate message is received
+- [ ] always-on lora receive functionality with unread notification icon
+
+## reader
+- [x] map auxiliary button to "next page" when in reader
+- [ ] make dedicated reader page that shows currently reading, progress, covers, etc
+- [ ] update chapter numbers to match actual book chapters
 
 ## other
 - [ ] turn ui into its own library; have a UiBuilder with pluggable components
 - [x] page icons for ui homepage
-- [ ] user settings stored on sd card
-- [ ] customizable fonts/font size
-- [ ] customizable timezone
+- [x] user settings persisted
+- [x] customizable fonts/font size
+- [x] customizable timezone
 - [ ] pull now playing from music server (see waveshare-epaper repo)
 - [ ] pull weather data and display on ui page
 - [ ] pull home environment data (temp, humidity, co2)

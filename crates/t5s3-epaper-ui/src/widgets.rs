@@ -6,7 +6,7 @@ use embedded_graphics::{
         MonoTextStyle,
     },
     prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle},
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
@@ -54,7 +54,12 @@ fn draw_battery_icon(display: &mut Display, x: i32, y: i32, pct: u16) {
     }
 }
 
-pub(crate) fn draw_status_bar(display: &mut Display, pct: u16, time: Option<(u32, u32)>) {
+pub(crate) fn draw_status_bar(
+    display: &mut Display,
+    pct: u16,
+    time: Option<(u32, u32)>,
+    time_24h: bool,
+) {
     let status_font = MonoTextStyle::new(&FONT_9X15, Gray4::BLACK);
 
     let mut buf = FmtBuf::<8>::new();
@@ -69,7 +74,7 @@ pub(crate) fn draw_status_bar(display: &mut Display, pct: u16, time: Option<(u32
     .ok();
 
     draw_battery_icon(display, 497, 20, pct);
-    draw_statusbar_time(display, time);
+    draw_statusbar_time(display, time, time_24h);
 
     Rectangle::new(Point::new(0, STATUS_H - 2), Size::new(SCREEN_W as u32, 2))
         .into_styled(PrimitiveStyle::with_fill(Gray4::new(8)))
@@ -77,18 +82,26 @@ pub(crate) fn draw_status_bar(display: &mut Display, pct: u16, time: Option<(u32
         .ok();
 }
 
-// the clock (HH:MM, or --:-- before an NTP sync) shown centered in the status
-// bar. drawn over a white fill so the once-a-minute partial refresh cleanly
-// replaces the previous value.
-pub(crate) fn draw_statusbar_time(display: &mut Display, time: Option<(u32, u32)>) {
-    Rectangle::new(Point::new(215, 18), Size::new(110, 30))
+// the clock shown centered in the status bar (24-hour HH:MM, 12-hour h:MM with
+// an AM/PM suffix, or --:-- before an NTP sync). drawn over a white fill so the
+// once-a-minute partial refresh cleanly replaces the previous value.
+pub(crate) fn draw_statusbar_time(display: &mut Display, time: Option<(u32, u32)>, time_24h: bool) {
+    Rectangle::new(Point::new(210, 18), Size::new(120, 30))
         .into_styled(PrimitiveStyle::with_fill(Gray4::WHITE))
         .draw(display)
         .ok();
     let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
-    let mut buf = FmtBuf::<8>::new();
+    let mut buf = FmtBuf::<12>::new();
     match time {
-        Some((h, m)) => write!(buf, "{h:02}:{m:02}").ok(),
+        Some((h, m)) if time_24h => write!(buf, "{h:02}:{m:02}").ok(),
+        Some((h, m)) => {
+            let suffix = if h < 12 { "AM" } else { "PM" };
+            let h12 = match h % 12 {
+                0 => 12,
+                other => other,
+            };
+            write!(buf, "{h12}:{m:02} {suffix}").ok()
+        }
         None => write!(buf, "--:--").ok(),
     };
     Text::with_alignment(buf.as_str(), Point::new(270, 37), bold, Alignment::Center)
@@ -97,25 +110,11 @@ pub(crate) fn draw_statusbar_time(display: &mut Display, time: Option<(u32, u32)
 }
 
 pub(crate) fn statusbar_time_rect() -> t5s3_epaper_core::display::Rectangle {
-    screen_to_native_rect(215, 18, 110, 30)
+    screen_to_native_rect(210, 18, 120, 30)
 }
 
 pub(crate) fn draw_back_button(display: &mut Display) {
     let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
-    let border = PrimitiveStyleBuilder::new()
-        .stroke_color(Gray4::BLACK)
-        .stroke_width(2)
-        .fill_color(Gray4::WHITE)
-        .build();
-
-    RoundedRectangle::with_equal_corners(
-        Rectangle::new(Point::new(10, 10), Size::new(100, 40)),
-        Size::new(8, 8),
-    )
-    .into_styled(border)
-    .draw(display)
-    .ok();
-
     Text::with_alignment("< Back", Point::new(60, 36), bold, Alignment::Center)
         .draw(display)
         .ok();

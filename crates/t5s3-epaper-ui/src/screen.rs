@@ -9,6 +9,7 @@ pub(crate) enum Screen {
     Files,
     Image,
     Reader,
+    Settings,
 }
 
 impl Screen {
@@ -23,6 +24,7 @@ impl Screen {
             Screen::Files => 6,
             Screen::Image => 7,
             Screen::Reader => 8,
+            Screen::Settings => 9,
         }
     }
 
@@ -36,6 +38,7 @@ impl Screen {
             3 => Screen::Frontlight,
             5 => Screen::Info,
             6 => Screen::Files,
+            9 => Screen::Settings,
             _ => Screen::Home,
         }
     }

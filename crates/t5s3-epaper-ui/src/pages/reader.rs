@@ -30,30 +30,137 @@ use u8g2_fonts::{
     FontRenderer,
 };
 
-use crate::layout::{SCREEN_W, STATUS_H};
+use crate::{
+    layout::{SCREEN_W, STATUS_H},
+    settings::{FontFamily, FontSize, LineSpacing, ReaderStyle},
+};
 
 const MARGIN_X: i32 = 24;
 const CONTENT_TOP: i32 = 70;
 const CONTENT_BOTTOM: i32 = 905;
 const CONTENT_H: i32 = CONTENT_BOTTOM - CONTENT_TOP;
-const LINE_H: i32 = 24;
-const BLANK_H: i32 = 12;
-const CHAR_W: i32 = 9;
 const FOOTER_Y: i32 = 935;
 const PREV_ZONE_W: i32 = 180;
-const CHARS_PER_LINE: usize = ((SCREEN_W - 2 * MARGIN_X) / CHAR_W) as usize;
 // 8.3-safe so embedded-sdmmc can create it: a <=8 char dir, and per-book
 // progress files named from a 32-bit path hash (8 hex chars) with a 3-char
 // extension. FAT cannot create long/LFN names.
 const PROGRESS_DIR: &str = "/READER";
 
-// 9x15 monospace u8g2 fonts: a Latin-extended face (ASCII + accents), a
-// Cyrillic fallback, and an ASCII bold face. all share the 9px cell, so the
-// fixed-width wrapping math is unchanged; glyphs are routed per-character by
-// Unicode range.
-static FONT_REGULAR: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_te>();
-static FONT_CYRILLIC: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_t_cyrillic>();
-static FONT_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15B_tr>();
+// reading faces at three sizes: Sans is Helvetica, Serif is New Century
+// Schoolbook (both proportional, regular + bold, Latin-extended), and Mono is
+// the X11 9x15 / 10x20 bitmap faces plus Inconsolata 24. Cyrillic (which none
+// of these cover, except via the monospace fallback) routes to a size-matched
+// monospace Cyrillic face. the layout measures every glyph's advance, so the
+// mixed widths still lay out correctly. faces with no bold variant (10x20,
+// inr24) reuse their regular face for bold context.
+static SANS_S_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvR14_te>();
+static SANS_S_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvB14_te>();
+static SANS_M_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvR18_te>();
+static SANS_M_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvB18_te>();
+static SANS_L_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvR24_te>();
+static SANS_L_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_helvB24_te>();
+static SERIF_S_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenR14_te>();
+static SERIF_S_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenB14_te>();
+static SERIF_M_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenR18_te>();
+static SERIF_M_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenB18_te>();
+static SERIF_L_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenR24_te>();
+static SERIF_L_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_ncenB24_te>();
+static MONO_S_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_te>();
+static MONO_S_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15B_tr>();
+static MONO_M_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_10x20_te>();
+static MONO_L_REG: FontRenderer = FontRenderer::new::<fonts::u8g2_font_inr24_mf>();
+static CYR_S: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_t_cyrillic>();
+static CYR_M: FontRenderer = FontRenderer::new::<fonts::u8g2_font_10x20_t_cyrillic>();
+static CYR_L: FontRenderer = FontRenderer::new::<fonts::u8g2_font_inr24_t_cyrillic>();
+
+// usable text width between the margins.
+const CONTENT_W: i32 = SCREEN_W - 2 * MARGIN_X;
+// the printable ASCII range whose advances are precomputed per document.
+const ASCII_LO: u8 = 0x20;
+const ASCII_HI: u8 = 0x7E;
+const ASCII_N: usize = (ASCII_HI - ASCII_LO) as usize + 1;
+
+// metrics for one reader style: the resolved family/size, line and paragraph
+// heights, plus a table of ASCII glyph advances (regular and bold) so width-
+// based wrapping doesn't have to look up the font for every common character.
+#[derive(Clone, Copy)]
+struct Metrics {
+    family: FontFamily,
+    size: FontSize,
+    line_h: i32,
+    blank_h: i32,
+    ascii_regular: [i16; ASCII_N],
+    ascii_bold: [i16; ASCII_N],
+}
+
+impl Metrics {
+    fn new(style: ReaderStyle) -> Self {
+        let line_h = line_height(style.size, style.spacing);
+        let mut ascii_regular = [0i16; ASCII_N];
+        let mut ascii_bold = [0i16; ASCII_N];
+        for i in 0..ASCII_N {
+            let ch = (ASCII_LO + i as u8) as char;
+            ascii_regular[i] = measure_char(ch, false, style.family, style.size);
+            ascii_bold[i] = measure_char(ch, true, style.family, style.size);
+        }
+        Self {
+            family: style.family,
+            size: style.size,
+            line_h,
+            blank_h: line_h / 2,
+            ascii_regular,
+            ascii_bold,
+        }
+    }
+}
+
+// line height for a size at a spacing: a per-size base (the "Normal" leading
+// that reads well) tightened or loosened by the spacing setting.
+fn line_height(size: FontSize, spacing: LineSpacing) -> i32 {
+    let base = match size {
+        FontSize::Small => 24,
+        FontSize::Medium => 28,
+        FontSize::Large => 34,
+    };
+    match spacing {
+        LineSpacing::Compact => base - 3,
+        LineSpacing::Normal => base,
+        LineSpacing::Relaxed => base + 7,
+    }
+}
+
+// pixel advance of a single character in the face selected for (bold, family,
+// size).
+fn measure_char(ch: char, bold: bool, family: FontFamily, size: FontSize) -> i16 {
+    let mut buf = [0u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    pick_font(ch, bold, family, size)
+        .get_rendered_dimensions(&*s, Point::zero(), VerticalPosition::Baseline)
+        .map(|d| d.advance.x)
+        .unwrap_or(0)
+        .clamp(0, i32::from(i16::MAX)) as i16
+}
+
+// pixel advance of a character, served from the ASCII table where possible and
+// measured live for everything else (accents, Cyrillic, ...).
+fn char_adv(ch: char, bold: bool, m: &Metrics) -> i32 {
+    let cp = ch as u32;
+    if (u32::from(ASCII_LO)..=u32::from(ASCII_HI)).contains(&cp) {
+        let idx = (cp - u32::from(ASCII_LO)) as usize;
+        let table = if bold {
+            &m.ascii_bold
+        } else {
+            &m.ascii_regular
+        };
+        i32::from(table[idx])
+    } else {
+        i32::from(measure_char(ch, bold, m.family, m.size))
+    }
+}
+
+fn word_width(word: &str, bold: bool, m: &Metrics) -> i32 {
+    word.chars().map(|c| char_adv(c, bold, m)).sum()
+}
 
 struct Segment {
     text: String,
@@ -72,11 +179,11 @@ enum Line {
 }
 
 impl Line {
-    fn height(&self) -> i32 {
+    fn height(&self, m: &Metrics) -> i32 {
         match self {
             Line::Image(_) => 0,
-            Line::Blank => BLANK_H,
-            _ => LINE_H,
+            Line::Blank => m.blank_h,
+            _ => m.line_h,
         }
     }
 }
@@ -96,6 +203,7 @@ pub(crate) struct ReaderDoc {
     // content-hash key of the file, used to name its progress file so a
     // bookmark follows the book across moves/renames.
     key: u32,
+    metrics: Metrics,
     chapter_count: usize,
     chapter: usize,
     lines: Vec<Line>,
@@ -104,18 +212,20 @@ pub(crate) struct ReaderDoc {
 }
 
 impl ReaderDoc {
-    fn new(source: Source, key: u32, chapter: usize, page: usize) -> Self {
+    fn new(source: Source, key: u32, chapter: usize, page: usize, style: ReaderStyle) -> Self {
+        let metrics = Metrics::new(style);
         let chapter_count = match &source {
             Source::Memory(doc) => doc.chapters().len().max(1),
             Source::Book(epub) => epub.chapter_count().max(1),
         };
         let chapter = chapter.min(chapter_count.saturating_sub(1));
-        let lines = layout_chapter(&source, chapter);
-        let pages = paginate(&lines);
+        let lines = layout_chapter(&source, chapter, &metrics);
+        let pages = paginate(&lines, &metrics);
         let page = page.min(pages.len().saturating_sub(1));
         Self {
             source,
             key,
+            metrics,
             chapter_count,
             chapter,
             lines,
@@ -126,8 +236,8 @@ impl ReaderDoc {
 
     fn load_chapter(&mut self, chapter: usize, at_end: bool) {
         self.chapter = chapter;
-        self.lines = layout_chapter(&self.source, chapter);
-        self.pages = paginate(&self.lines);
+        self.lines = layout_chapter(&self.source, chapter, &self.metrics);
+        self.pages = paginate(&self.lines, &self.metrics);
         self.page = if at_end {
             self.pages.len().saturating_sub(1)
         } else {
@@ -191,7 +301,7 @@ pub(crate) fn is_reader(name: &str) -> bool {
 // read a supported file from the card and open it at `chapter`/`page`. mounts
 // the card the same self-contained way as the file browser. returns a short
 // human-readable message on failure so the caller can show why it failed.
-pub(crate) fn load_document(path: &str) -> Result<ReaderDoc, String> {
+pub(crate) fn load_document(path: &str, style: ReaderStyle) -> Result<ReaderDoc, String> {
     let (_lora_cs, card) = mount().map_err(|e| format!("SD init failed: {e:?}"))?;
     let bytes = card
         .read_file(path)
@@ -221,7 +331,7 @@ pub(crate) fn load_document(path: &str) -> Result<ReaderDoc, String> {
         })?)
     };
 
-    Ok(ReaderDoc::new(source, key, chapter, page))
+    Ok(ReaderDoc::new(source, key, chapter, page, style))
 }
 
 pub(crate) fn draw(display: &mut Display, doc: &ReaderDoc) {
@@ -229,7 +339,8 @@ pub(crate) fn draw(display: &mut Display, doc: &ReaderDoc) {
     let start = doc.pages.get(page).copied().unwrap_or(0);
     let end = doc.pages.get(page + 1).copied().unwrap_or(doc.lines.len());
 
-    let mut y = CONTENT_TOP + 18;
+    let m = &doc.metrics;
+    let mut y = CONTENT_TOP + m.line_h - 6;
     for line in &doc.lines[start..end] {
         match line {
             Line::Blank => {}
@@ -243,10 +354,10 @@ pub(crate) fn draw(display: &mut Display, doc: &ReaderDoc) {
                 .draw(display)
                 .ok();
             }
-            Line::Text(segments) => draw_segments(display, segments, y, false),
-            Line::Heading(segments) => draw_segments(display, segments, y, true),
+            Line::Text(segments) => draw_segments(display, segments, y, false, m),
+            Line::Heading(segments) => draw_segments(display, segments, y, true, m),
         }
-        y += line.height();
+        y += line.height(m);
     }
 
     let footer = if doc.chapter_count > 1 {
@@ -297,7 +408,13 @@ fn read_progress(card: &SdCard, key: u32) -> (usize, usize) {
         .unwrap_or((0, 0))
 }
 
-fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, force_bold: bool) {
+fn draw_segments(
+    display: &mut Display,
+    segments: &[Segment],
+    baseline: i32,
+    force_bold: bool,
+    m: &Metrics,
+) {
     let mut x = MARGIN_X;
     for segment in segments {
         let bold = force_bold || segment.bold;
@@ -305,30 +422,47 @@ fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, for
             let pos = Point::new(x, baseline);
             let color = FontColor::Transparent(Gray4::BLACK);
             // fall back to '?' for glyphs no face has (e.g. Greek, CJK).
-            if pick_font(ch, bold)
+            if pick_font(ch, bold, m.family, m.size)
                 .render(ch, pos, VerticalPosition::Baseline, color, display)
                 .is_err()
             {
-                FONT_REGULAR
+                pick_font('?', false, m.family, m.size)
                     .render('?', pos, VerticalPosition::Baseline, color, display)
                     .ok();
             }
-            x += CHAR_W;
+            x += char_adv(ch, bold, m);
         }
     }
 }
 
-// route a glyph to a face that has it: Cyrillic to the Cyrillic font, ASCII in
-// bold context to the bold face, everything else (incl. accented Latin) to the
-// regular face. all three share the 9px advance, so x steps by CHAR_W per
-// glyph.
-fn pick_font(ch: char, bold: bool) -> &'static FontRenderer {
+// route a glyph to a face that has it: Cyrillic to the (monospace) Cyrillic
+// fallback, everything else (ASCII and accented Latin) to the selected family's
+// regular or bold face. proportional widths are handled by `char_adv`, so faces
+// need not share an advance.
+fn pick_font(ch: char, bold: bool, family: FontFamily, size: FontSize) -> &'static FontRenderer {
     if ('\u{0400}'..='\u{04FF}').contains(&ch) {
-        &FONT_CYRILLIC
-    } else if bold && ch.is_ascii() {
-        &FONT_BOLD
+        return match size {
+            FontSize::Small => &CYR_S,
+            FontSize::Medium => &CYR_M,
+            FontSize::Large => &CYR_L,
+        };
+    }
+    let (regular, bolded) = match (family, size) {
+        (FontFamily::Sans, FontSize::Small) => (&SANS_S_REG, &SANS_S_BOLD),
+        (FontFamily::Sans, FontSize::Medium) => (&SANS_M_REG, &SANS_M_BOLD),
+        (FontFamily::Sans, FontSize::Large) => (&SANS_L_REG, &SANS_L_BOLD),
+        (FontFamily::Serif, FontSize::Small) => (&SERIF_S_REG, &SERIF_S_BOLD),
+        (FontFamily::Serif, FontSize::Medium) => (&SERIF_M_REG, &SERIF_M_BOLD),
+        (FontFamily::Serif, FontSize::Large) => (&SERIF_L_REG, &SERIF_L_BOLD),
+        // 10x20 and inr24 ship no bold face, so bold reuses the regular one.
+        (FontFamily::Mono, FontSize::Small) => (&MONO_S_REG, &MONO_S_BOLD),
+        (FontFamily::Mono, FontSize::Medium) => (&MONO_M_REG, &MONO_M_REG),
+        (FontFamily::Mono, FontSize::Large) => (&MONO_L_REG, &MONO_L_REG),
+    };
+    if bold {
+        bolded
     } else {
-        &FONT_REGULAR
+        regular
     }
 }
 
@@ -402,15 +536,15 @@ fn dither(luma: u8, x: u32, y: u32) -> u8 {
 
 // lay out a single chapter's blocks into display lines. parsing the chapter
 // from an epub happens here, on demand, so only one chapter is resident.
-fn layout_chapter(source: &Source, chapter: usize) -> Vec<Line> {
+fn layout_chapter(source: &Source, chapter: usize, m: &Metrics) -> Vec<Line> {
     match source {
         Source::Memory(doc) => doc
             .chapters()
             .get(chapter)
-            .map(|c| layout_blocks(c.blocks()))
+            .map(|c| layout_blocks(c.blocks(), m))
             .unwrap_or_default(),
         Source::Book(epub) => match epub.chapter(chapter) {
-            Ok(c) => layout_blocks(c.blocks()),
+            Ok(c) => layout_blocks(c.blocks(), m),
             Err(e) => {
                 esp_println::println!("reader: chapter {chapter} failed: {e}");
                 Vec::new()
@@ -419,7 +553,7 @@ fn layout_chapter(source: &Source, chapter: usize) -> Vec<Line> {
     }
 }
 
-fn layout_blocks(blocks: &[Block]) -> Vec<Line> {
+fn layout_blocks(blocks: &[Block], m: &Metrics) -> Vec<Line> {
     let mut lines = Vec::new();
     for block in blocks {
         match block {
@@ -427,13 +561,13 @@ fn layout_blocks(blocks: &[Block]) -> Vec<Line> {
                 if !lines.is_empty() {
                     lines.push(Line::Blank);
                 }
-                for segments in wrap(spans) {
+                for segments in wrap(spans, true, m) {
                     lines.push(Line::Heading(segments));
                 }
                 lines.push(Line::Blank);
             }
             Block::Paragraph(spans) => {
-                for segments in wrap(spans) {
+                for segments in wrap(spans, false, m) {
                     lines.push(Line::Text(segments));
                 }
                 lines.push(Line::Blank);
@@ -445,7 +579,7 @@ fn layout_blocks(blocks: &[Block]) -> Vec<Line> {
     lines
 }
 
-fn paginate(lines: &[Line]) -> Vec<usize> {
+fn paginate(lines: &[Line], m: &Metrics) -> Vec<usize> {
     let mut starts = vec![0];
     let mut height = 0;
     for (i, line) in lines.iter().enumerate() {
@@ -461,7 +595,7 @@ fn paginate(lines: &[Line]) -> Vec<usize> {
             height = 0;
             continue;
         }
-        let line_h = line.height();
+        let line_h = line.height(m);
         if height > 0 && height + line_h > CONTENT_H {
             starts.push(i);
             height = 0;
@@ -471,65 +605,63 @@ fn paginate(lines: &[Line]) -> Vec<usize> {
     starts
 }
 
-// greedy word-wrap a paragraph's styled spans into display lines of at most
-// CHARS_PER_LINE columns. words longer than a line are hard-split. italic and
-// inline-code fall back to the regular face; only bold has a distinct font.
-fn wrap(spans: &[Span]) -> Vec<Vec<Segment>> {
+// greedy word-wrap a paragraph's styled spans into display lines no wider than
+// the content area, measuring each word's pixel width. `force_bold` makes the
+// whole run bold (used for headings). words wider than a line are hard-split.
+// italic and inline-code fall back to the regular face; bold has its own face.
+fn wrap(spans: &[Span], force_bold: bool, m: &Metrics) -> Vec<Vec<Segment>> {
     let mut lines: Vec<Vec<Segment>> = Vec::new();
     let mut current: Vec<Segment> = Vec::new();
-    let mut current_len = 0;
+    let mut current_w = 0;
 
     for span in spans {
-        let bold = span.style().contains(Style::BOLD);
+        let bold = force_bold || span.style().contains(Style::BOLD);
         let text = asciify(span.text());
+        let space_w = char_adv(' ', bold, m);
         for word in text.split_whitespace() {
-            let word_len = word.chars().count();
+            let ww = word_width(word, bold, m);
 
-            if word_len > CHARS_PER_LINE {
-                if current_len > 0 {
+            if ww > CONTENT_W {
+                if current_w > 0 {
                     lines.push(core::mem::take(&mut current));
-                    current_len = 0;
+                    current_w = 0;
                 }
-                let mut chars = word.chars().peekable();
-                while chars.peek().is_some() {
-                    let chunk: String = chars.by_ref().take(CHARS_PER_LINE).collect();
-                    let chunk_len = chunk.chars().count();
-                    if chunk_len == CHARS_PER_LINE {
-                        lines.push(vec![Segment { text: chunk, bold }]);
-                    } else {
-                        current.push(Segment { text: chunk, bold });
-                        current_len = chunk_len;
-                    }
-                }
+                split_word(word, bold, m, &mut lines, &mut current, &mut current_w);
                 continue;
             }
 
-            let needed = if current_len == 0 {
-                word_len
+            let needed = if current_w == 0 {
+                ww
             } else {
-                current_len + 1 + word_len
+                current_w + space_w + ww
             };
-            if current_len > 0 && needed > CHARS_PER_LINE {
+            if current_w > 0 && needed > CONTENT_W {
                 lines.push(core::mem::take(&mut current));
-                current_len = 0;
+                current_w = 0;
             }
-            push_word(&mut current, &mut current_len, word, bold);
+            push_word(&mut current, &mut current_w, word, bold, space_w, ww);
         }
     }
-    if current_len > 0 {
+    if current_w > 0 {
         lines.push(current);
     }
     lines
 }
 
-fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bold: bool) {
-    let word_len = word.chars().count();
-    if *current_len == 0 {
+fn push_word(
+    current: &mut Vec<Segment>,
+    current_w: &mut i32,
+    word: &str,
+    bold: bool,
+    space_w: i32,
+    ww: i32,
+) {
+    if *current_w == 0 {
         current.push(Segment {
             text: String::from(word),
             bold,
         });
-        *current_len = word_len;
+        *current_w = ww;
         return;
     }
     match current.last_mut() {
@@ -543,7 +675,37 @@ fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bo
             current.push(Segment { text, bold });
         }
     }
-    *current_len += 1 + word_len;
+    *current_w += space_w + ww;
+}
+
+// hard-split a word wider than the content area into chunks that fit, flushing
+// full chunks as their own lines and leaving the remainder in `current`.
+fn split_word(
+    word: &str,
+    bold: bool,
+    m: &Metrics,
+    lines: &mut Vec<Vec<Segment>>,
+    current: &mut Vec<Segment>,
+    current_w: &mut i32,
+) {
+    let mut chunk = String::new();
+    let mut w = 0;
+    for ch in word.chars() {
+        let cw = char_adv(ch, bold, m);
+        if w > 0 && w + cw > CONTENT_W {
+            lines.push(vec![Segment {
+                text: core::mem::take(&mut chunk),
+                bold,
+            }]);
+            w = 0;
+        }
+        chunk.push(ch);
+        w += cw;
+    }
+    if !chunk.is_empty() {
+        current.push(Segment { text: chunk, bold });
+        *current_w = w;
+    }
 }
 
 // normalize typographic punctuation that the fonts lack (dashes, ellipsis,
