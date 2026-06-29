@@ -109,16 +109,7 @@ use crate::{
             RECV_Y,
             SENT_Y,
         },
-        reader::{
-            draw as draw_reader,
-            is_reader,
-            load_document,
-            load_progress,
-            save_progress,
-            tap_zone,
-            ReaderDoc,
-            Tap,
-        },
+        reader::{draw as draw_reader, is_reader, load_document, tap_zone, ReaderDoc, Tap},
         sleep::{draw_screensaver, draw_sleep_screen, show_wallpaper, sleep_now_hit},
     },
     screen::Screen,
@@ -475,8 +466,7 @@ async fn main(_spawner: Spawner) -> ! {
         if input.buttons.home && current_screen != Screen::Home {
             if current_screen == Screen::Reader {
                 if let Some(doc) = &reader_doc {
-                    let (chapter, page) = doc.position();
-                    save_progress(&reader_path, chapter, page);
+                    doc.save();
                 }
             }
             current_screen = Screen::Home;
@@ -674,8 +664,7 @@ async fn main(_spawner: Spawner) -> ! {
                     Screen::Reader => {
                         if back_button_hit(sx, sy) {
                             if let Some(doc) = &reader_doc {
-                                let (chapter, page) = doc.position();
-                                save_progress(&reader_path, chapter, page);
+                                doc.save();
                             }
                             current_screen = Screen::Files;
                             needs_redraw = true;
@@ -729,8 +718,7 @@ async fn main(_spawner: Spawner) -> ! {
         // the document's length.
         if current_screen == Screen::Reader && reader_dirty {
             reader_dirty = false;
-            let (chapter, page) = load_progress(&reader_path);
-            match load_document(&reader_path, chapter, page) {
+            match load_document(&reader_path) {
                 Ok(doc) => {
                     reader_doc = Some(doc);
                     reader_status.clear();
@@ -830,8 +818,7 @@ async fn main(_spawner: Spawner) -> ! {
     // persist reading progress if we slept straight from the reader.
     if current_screen == Screen::Reader {
         if let Some(doc) = &reader_doc {
-            let (chapter, page) = doc.position();
-            save_progress(&reader_path, chapter, page);
+            doc.save();
         }
     }
     // remember where we were so wake lands on the same screen. single-threaded,

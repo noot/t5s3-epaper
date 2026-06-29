@@ -83,6 +83,9 @@ enum Source {
 // a time; turning past a chapter boundary parses and paginates the neighbour.
 pub(crate) struct ReaderDoc {
     source: Source,
+    // content-hash key of the file, used to name its progress file so a
+    // bookmark follows the book across moves/renames.
+    key: u32,
     chapter_count: usize,
     chapter: usize,
     lines: Vec<Line>,
@@ -91,7 +94,7 @@ pub(crate) struct ReaderDoc {
 }
 
 impl ReaderDoc {
-    fn new(source: Source, chapter: usize, page: usize) -> Self {
+    fn new(source: Source, key: u32, chapter: usize, page: usize) -> Self {
         let chapter_count = match &source {
             Source::Memory(doc) => doc.chapters().len().max(1),
             Source::Book(epub) => epub.chapter_count().max(1),
@@ -102,6 +105,7 @@ impl ReaderDoc {
         let page = page.min(pages.len().saturating_sub(1));
         Self {
             source,
+            key,
             chapter_count,
             chapter,
             lines,
@@ -145,8 +149,17 @@ impl ReaderDoc {
         }
     }
 
-    pub(crate) fn position(&self) -> (usize, usize) {
-        (self.chapter, self.page)
+    // persist the current chapter/page to the book's progress file, keyed by
+    // content hash so it survives the file being moved or renamed.
+    pub(crate) fn save(&self) {
+        let Ok((_lora_cs, card)) = mount() else {
+            return;
+        };
+        card.create_dir_all(PROGRESS_DIR).ok();
+        let body = format!("{} {}", self.chapter, self.page);
+        if let Err(e) = card.write_file(&progress_path(self.key), body.as_bytes()) {
+            esp_println::println!("reader: save progress failed: {e:?}");
+        }
     }
 }
 
@@ -168,11 +181,15 @@ pub(crate) fn is_reader(name: &str) -> bool {
 // read a supported file from the card and open it at `chapter`/`page`. mounts
 // the card the same self-contained way as the file browser. returns a short
 // human-readable message on failure so the caller can show why it failed.
-pub(crate) fn load_document(path: &str, chapter: usize, page: usize) -> Result<ReaderDoc, String> {
+pub(crate) fn load_document(path: &str) -> Result<ReaderDoc, String> {
     let (_lora_cs, card) = mount().map_err(|e| format!("SD init failed: {e:?}"))?;
     let bytes = card
         .read_file(path)
         .map_err(|e| format!("read failed: {e:?}"))?;
+
+    // key the bookmark by file contents (not path) so it follows moves/renames.
+    let key = fnv1a(&bytes) as u32;
+    let (chapter, page) = read_progress(&card, key);
 
     let ext = path.rsplit_once('.').map_or("", |(_, ext)| ext);
     let source = if ext.eq_ignore_ascii_case("epub") {
@@ -194,7 +211,7 @@ pub(crate) fn load_document(path: &str, chapter: usize, page: usize) -> Result<R
         })?)
     };
 
-    Ok(ReaderDoc::new(source, chapter, page))
+    Ok(ReaderDoc::new(source, key, chapter, page))
 }
 
 pub(crate) fn draw(display: &mut Display, doc: &ReaderDoc) {
@@ -253,33 +270,21 @@ pub(crate) fn tap_zone(sx: i32, sy: i32) -> Tap {
     }
 }
 
-pub(crate) fn save_progress(path: &str, chapter: usize, page: usize) {
-    let (_lora_cs, card) = match mount() {
-        Ok(card) => card,
-        Err(_) => return,
-    };
-    card.create_dir_all(PROGRESS_DIR).ok();
-    let body = format!("{chapter} {page}");
-    if let Err(e) = card.write_file(&progress_path(path), body.as_bytes()) {
-        esp_println::println!("reader: save progress failed: {e:?}");
-    }
-}
-
-pub(crate) fn load_progress(path: &str) -> (usize, usize) {
-    let (_lora_cs, card) = match mount() {
-        Ok(card) => card,
-        Err(_) => return (0, 0),
-    };
-    let Ok(bytes) = card.read_file(&progress_path(path)) else {
+// read the saved (chapter, page) for `key` using an already-mounted card,
+// defaulting to the start if there is no readable bookmark.
+fn read_progress(card: &SdCard, key: u32) -> (usize, usize) {
+    let Ok(bytes) = card.read_file(&progress_path(key)) else {
         return (0, 0);
     };
-    let parsed = core::str::from_utf8(&bytes).ok().and_then(|text| {
-        let mut parts = text.split_whitespace();
-        let chapter = parts.next()?.parse().ok()?;
-        let page = parts.next()?.parse().ok()?;
-        Some((chapter, page))
-    });
-    parsed.unwrap_or((0, 0))
+    core::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| {
+            let mut parts = text.split_whitespace();
+            let chapter = parts.next()?.parse().ok()?;
+            let page = parts.next()?.parse().ok()?;
+            Some((chapter, page))
+        })
+        .unwrap_or((0, 0))
 }
 
 fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, force_bold: bool) {
@@ -510,13 +515,13 @@ fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bo
     *current_len += 1 + word_len;
 }
 
-fn progress_path(path: &str) -> String {
-    format!("{PROGRESS_DIR}/{:08X}.POS", fnv1a(path) as u32)
+fn progress_path(key: u32) -> String {
+    format!("{PROGRESS_DIR}/{key:08X}.POS")
 }
 
-fn fnv1a(s: &str) -> u64 {
+fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
+    for &b in bytes {
         hash ^= u64::from(b);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
