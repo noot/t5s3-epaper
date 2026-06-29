@@ -23,9 +23,10 @@ use tinybmp::Bmp;
 use crate::{fmt::FmtBuf, layout::SCREEN_W, widgets::draw_back_button};
 
 const SLEEP_BTN_X: i32 = 160;
-const SLEEP_BTN_Y: i32 = 420;
+const SLEEP_BTN_Y: i32 = 400;
 const SLEEP_BTN_W: u32 = 220;
 const SLEEP_BTN_H: u32 = 90;
+const POWER_BTN_Y: i32 = 530;
 
 // folder of 540x960 grayscale .bmp wallpapers on the SD card; one is picked at
 // random as the sleep screensaver. this must be a FAT 8.3 name (<=8 chars), as
@@ -35,6 +36,11 @@ const WALLPAPER_DIR: &str = "/WALLS";
 pub(crate) fn sleep_now_hit(sx: i32, sy: i32) -> bool {
     (SLEEP_BTN_X..SLEEP_BTN_X + SLEEP_BTN_W as i32).contains(&sx)
         && (SLEEP_BTN_Y..SLEEP_BTN_Y + SLEEP_BTN_H as i32).contains(&sy)
+}
+
+pub(crate) fn power_off_hit(sx: i32, sy: i32) -> bool {
+    (SLEEP_BTN_X..SLEEP_BTN_X + SLEEP_BTN_W as i32).contains(&sx)
+        && (POWER_BTN_Y..POWER_BTN_Y + SLEEP_BTN_H as i32).contains(&sy)
 }
 
 pub(crate) fn draw_sleep_screen(display: &mut Display) {
@@ -67,26 +73,33 @@ pub(crate) fn draw_sleep_screen(display: &mut Display) {
     .draw(display)
     .ok();
 
-    let btn_border = PrimitiveStyleBuilder::new()
+    button(display, SLEEP_BTN_Y, "Sleep Now");
+    button(display, POWER_BTN_Y, "Power Off");
+}
+
+// a labelled button spanning the shared sleep-screen button column at `y`.
+fn button(display: &mut Display, y: i32, label: &str) {
+    let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
+    let border = PrimitiveStyleBuilder::new()
         .stroke_color(Gray4::BLACK)
         .stroke_width(3)
         .fill_color(Gray4::WHITE)
         .build();
     RoundedRectangle::with_equal_corners(
         Rectangle::new(
-            Point::new(SLEEP_BTN_X, SLEEP_BTN_Y),
+            Point::new(SLEEP_BTN_X, y),
             Size::new(SLEEP_BTN_W, SLEEP_BTN_H),
         ),
         Size::new(12, 12),
     )
-    .into_styled(btn_border)
+    .into_styled(border)
     .draw(display)
     .ok();
     Text::with_alignment(
-        "Sleep Now",
+        label,
         Point::new(
             SLEEP_BTN_X + SLEEP_BTN_W as i32 / 2,
-            SLEEP_BTN_Y + SLEEP_BTN_H as i32 / 2 + 6,
+            y + SLEEP_BTN_H as i32 / 2 + 6,
         ),
         bold,
         Alignment::Center,
@@ -145,6 +158,31 @@ pub(crate) fn draw_screensaver(display: &mut Display, pct: u16) {
     let mut buf = FmtBuf::<24>::new();
     write!(buf, "Battery {}%", pct.min(100)).ok();
     Text::with_alignment(buf.as_str(), Point::new(cx, 700), small, Alignment::Center)
+        .draw(display)
+        .ok();
+}
+
+// shown right before the PMIC powers the board off (battery FET disabled).
+pub(crate) fn draw_power_off_screen(display: &mut Display, pct: u16) {
+    let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
+    let small = MonoTextStyle::new(&FONT_9X15, Gray4::BLACK);
+    let cx = SCREEN_W / 2;
+
+    Text::with_alignment("Powered Off", Point::new(cx, 420), bold, Alignment::Center)
+        .draw(display)
+        .ok();
+    Text::with_alignment(
+        "Press the power button to turn on.",
+        Point::new(cx, 470),
+        small,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    let mut buf = FmtBuf::<24>::new();
+    write!(buf, "Battery {}%", pct.min(100)).ok();
+    Text::with_alignment(buf.as_str(), Point::new(cx, 540), small, Alignment::Center)
         .draw(display)
         .ok();
 }

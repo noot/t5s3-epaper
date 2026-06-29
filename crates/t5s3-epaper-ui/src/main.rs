@@ -130,7 +130,14 @@ use crate::{
             tz_value_rect,
             Hit as SettingsHit,
         },
-        sleep::{draw_screensaver, draw_sleep_screen, show_wallpaper, sleep_now_hit},
+        sleep::{
+            draw_power_off_screen,
+            draw_screensaver,
+            draw_sleep_screen,
+            power_off_hit,
+            show_wallpaper,
+            sleep_now_hit,
+        },
     },
     screen::Screen,
     settings::Settings,
@@ -286,6 +293,9 @@ async fn main(_spawner: Spawner) -> ! {
     let mut touch_active = false;
     // whether the auxiliary button is currently held, so each press acts once.
     let mut aux_active = false;
+    // set when Power Off is tapped on the sleep screen, to branch the teardown
+    // below into a full PMIC shutdown instead of deep sleep.
+    let mut power_off = false;
     let mut last_status_minute: u32 = 60;
     // time of the last clock sync, used to schedule periodic re-syncs.
     let mut last_resync_secs = clock.now_us() / 1_000_000;
@@ -577,6 +587,10 @@ async fn main(_spawner: Spawner) -> ! {
                         } else if sleep_now_hit(sx, sy) {
                             // leave the loop to draw the screensaver and enter
                             // deep sleep below
+                            break;
+                        } else if power_off_hit(sx, sy) {
+                            // leave the loop to power the board off below
+                            power_off = true;
                             break;
                         }
                     }
@@ -937,6 +951,23 @@ async fn main(_spawner: Spawner) -> ! {
     // persist the user's brightness so it is restored on the next boot.
     settings.brightness = brightness;
     settings.save();
+
+    // full power-off requested from the sleep screen: paint a notice, then cut
+    // the battery FET via the PMIC. with USB connected the board may stay
+    // powered, so halt afterwards rather than falling into the deep-sleep path.
+    if power_off {
+        let pct = display.battery_percentage().unwrap_or(0);
+        display.clear().ok();
+        draw_power_off_screen(&mut display, pct);
+        display.flush(DrawMode::BlackOnWhite).expect("to flush");
+        if let Err(e) = t5s3_epaper_core::power::shutdown(display) {
+            esp_println::println!("power: shutdown failed: {e:?}");
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     // remember where we were so wake lands on the same screen. single-threaded,
     // so writing the RTC-backed static is sound.
     unsafe {
