@@ -8,4 +8,10 @@ pub enum Error {
     Empty,
     #[error("malformed {context}")]
     Malformed { context: String },
+    #[error("invalid zip archive: {0}")]
+    Zip(&'static str),
+    #[error("failed to inflate zip entry {entry}")]
+    Inflate { entry: String },
+    #[error("zip entry not found: {0}")]
+    MissingEntry(String),
 }

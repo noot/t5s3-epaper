@@ -299,6 +299,8 @@ async fn main(_spawner: Spawner) -> ! {
     let mut reader_doc: Option<ReaderDoc> = None;
     let mut reader_page: usize = 0;
     let mut reader_dirty = false;
+    // why the open failed, shown on the reader screen when `reader_doc` is None.
+    let mut reader_status = String::new();
 
     #[cfg(feature = "gps")]
     let mut gps_refresh: u16 = 0;
@@ -402,8 +404,16 @@ async fn main(_spawner: Spawner) -> ! {
                         None => {
                             Text::with_alignment(
                                 "cannot open file",
-                                Point::new(SCREEN_W / 2, 400),
-                                MonoTextStyle::new(&FONT_9X15, Gray4::BLACK),
+                                Point::new(SCREEN_W / 2, 380),
+                                MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK),
+                                Alignment::Center,
+                            )
+                            .draw(&mut display)
+                            .ok();
+                            Text::with_alignment(
+                                &reader_status,
+                                Point::new(SCREEN_W / 2, 420),
+                                MonoTextStyle::new(&FONT_9X15, Gray4::new(4)),
                                 Alignment::Center,
                             )
                             .draw(&mut display)
@@ -722,12 +732,16 @@ async fn main(_spawner: Spawner) -> ! {
         if current_screen == Screen::Reader && reader_dirty {
             reader_dirty = false;
             match load_document(&reader_path) {
-                Some(doc) => {
+                Ok(doc) => {
                     reader_page =
                         load_progress(&reader_path).min(doc.page_count().saturating_sub(1));
                     reader_doc = Some(doc);
+                    reader_status.clear();
                 }
-                None => reader_doc = None,
+                Err(msg) => {
+                    reader_doc = None;
+                    reader_status = msg;
+                }
             }
             needs_redraw = true;
         }

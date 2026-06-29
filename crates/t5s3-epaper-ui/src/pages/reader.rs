@@ -10,7 +10,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
-use epub_reader::{parse_markdown, parse_txt, Block, Document, Span, Style};
+use epub_reader::{parse_epub, parse_markdown, parse_txt, Block, Document, Span, Style};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use t5s3_epaper_core::{
     sdcard::{Error, PinConfig},
@@ -30,7 +30,10 @@ const CHAR_W: i32 = 9;
 const FOOTER_Y: i32 = 935;
 const PREV_ZONE_W: i32 = 180;
 const CHARS_PER_LINE: usize = ((SCREEN_W - 2 * MARGIN_X) / CHAR_W) as usize;
-const PROGRESS_DIR: &str = "/.reader";
+// 8.3-safe so embedded-sdmmc can create it: a <=8 char dir, and per-book
+// progress files named from a 32-bit path hash (8 hex chars) with a 3-char
+// extension. FAT cannot create long/LFN names.
+const PROGRESS_DIR: &str = "/READER";
 
 struct Segment {
     text: String,
@@ -38,10 +41,12 @@ struct Segment {
 }
 
 // a laid-out display line. heights drive pagination; `Blank` is the gap between
-// paragraphs and around headings.
+// paragraphs and around headings; `PageBreak` forces the next chapter onto a
+// fresh page and renders nothing.
 enum Line {
     Blank,
     Rule,
+    PageBreak,
     Text(Vec<Segment>),
     Heading(Vec<Segment>),
 }
@@ -49,6 +54,7 @@ enum Line {
 impl Line {
     fn height(&self) -> i32 {
         match self {
+            Line::PageBreak => 0,
             Line::Blank => BLANK_H,
             _ => LINE_H,
         }
@@ -79,47 +85,37 @@ pub(crate) fn is_reader(name: &str) -> bool {
         ext.eq_ignore_ascii_case("txt")
             || ext.eq_ignore_ascii_case("md")
             || ext.eq_ignore_ascii_case("markdown")
+            || ext.eq_ignore_ascii_case("epub")
     })
 }
 
 // read a supported text file from the card and lay it out into pages. mounts
-// the card the same self-contained way as the file browser. returns None (after
-// logging) if the card, file, or parse fails so the caller can show a message.
-pub(crate) fn load_document(path: &str) -> Option<ReaderDoc> {
-    let (_lora_cs, card) = match mount() {
-        Ok(card) => card,
-        Err(e) => {
-            esp_println::println!("reader: sd init failed: {e:?}");
-            return None;
-        }
-    };
-    let bytes = match card.read_file(path) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            esp_println::println!("reader: read {path} failed: {e:?}");
-            return None;
-        }
-    };
+// the card the same self-contained way as the file browser. returns a short
+// human-readable message on failure so the caller can show why it failed.
+pub(crate) fn load_document(path: &str) -> Result<ReaderDoc, String> {
+    let (_lora_cs, card) = mount().map_err(|e| format!("SD init failed: {e:?}"))?;
+    let bytes = card
+        .read_file(path)
+        .map_err(|e| format!("read failed: {e:?}"))?;
 
     let ext = path.rsplit_once('.').map_or("", |(_, ext)| ext);
     let parsed = if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
         parse_markdown(&bytes)
     } else if ext.eq_ignore_ascii_case("txt") {
         parse_txt(&bytes)
+    } else if ext.eq_ignore_ascii_case("epub") {
+        parse_epub(&bytes)
     } else {
-        return None;
+        return Err(format!("unsupported file type: .{ext}"));
     };
-    let doc = match parsed {
-        Ok(doc) => doc,
-        Err(e) => {
-            esp_println::println!("reader: parse {path} failed: {e}");
-            return None;
-        }
-    };
+    let doc = parsed.map_err(|e| {
+        esp_println::println!("reader: parse {path} failed: {e}");
+        format!("parse failed: {e}")
+    })?;
 
     let lines = layout(&doc);
     let pages = paginate(&lines);
-    Some(ReaderDoc { lines, pages })
+    Ok(ReaderDoc { lines, pages })
 }
 
 pub(crate) fn draw_page(display: &mut Display, doc: &ReaderDoc, page: usize) {
@@ -130,7 +126,7 @@ pub(crate) fn draw_page(display: &mut Display, doc: &ReaderDoc, page: usize) {
     let mut y = CONTENT_TOP + 18;
     for line in &doc.lines[start..end] {
         match line {
-            Line::Blank => {}
+            Line::Blank | Line::PageBreak => {}
             Line::Rule => {
                 Rectangle::new(
                     Point::new(MARGIN_X, y - 8),
@@ -209,7 +205,10 @@ fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, for
 
 fn layout(doc: &Document) -> Vec<Line> {
     let mut lines = Vec::new();
-    for chapter in doc.chapters() {
+    for (i, chapter) in doc.chapters().iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::PageBreak);
+        }
         for block in chapter.blocks() {
             match block {
                 Block::Heading { spans, .. } => {
@@ -244,6 +243,13 @@ fn paginate(lines: &[Line]) -> Vec<usize> {
     let mut starts = vec![0];
     let mut height = 0;
     for (i, line) in lines.iter().enumerate() {
+        if matches!(line, Line::PageBreak) {
+            if height > 0 {
+                starts.push(i);
+                height = 0;
+            }
+            continue;
+        }
         let line_h = line.height();
         if height > 0 && height + line_h > CONTENT_H {
             starts.push(i);
@@ -329,7 +335,7 @@ fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bo
 }
 
 fn progress_path(path: &str) -> String {
-    format!("{PROGRESS_DIR}/{:016x}.pos", fnv1a(path))
+    format!("{PROGRESS_DIR}/{:08X}.POS", fnv1a(path) as u32)
 }
 
 fn fnv1a(s: &str) -> u64 {
