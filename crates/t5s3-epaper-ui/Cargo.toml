@@ -26,6 +26,7 @@ embassy-time = { workspace = true }
 embassy-futures = { workspace = true }
 embedded-graphics = { workspace = true }
 embedded-graphics-core = { workspace = true }
+u8g2-fonts = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-println = { workspace = true }
 tinybmp = { workspace = true }

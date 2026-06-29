@@ -1915,6 +1915,7 @@ dependencies = [
  "nmea",
  "t5s3-epaper-core",
  "tinybmp",
+ "u8g2-fonts",
 ]
 
 [[package]]

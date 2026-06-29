@@ -1,10 +1,7 @@
 use alloc::{format, string::String, vec, vec::Vec};
 
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_9X15, FONT_9X18_BOLD},
-        MonoTextStyle,
-    },
+    mono_font::{ascii::FONT_9X15, MonoTextStyle},
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::{Alignment, Text},
@@ -27,6 +24,11 @@ use t5s3_epaper_core::{
     Display,
     SdCard,
 };
+use u8g2_fonts::{
+    fonts,
+    types::{FontColor, VerticalPosition},
+    FontRenderer,
+};
 
 use crate::layout::{SCREEN_W, STATUS_H};
 
@@ -44,6 +46,14 @@ const CHARS_PER_LINE: usize = ((SCREEN_W - 2 * MARGIN_X) / CHAR_W) as usize;
 // progress files named from a 32-bit path hash (8 hex chars) with a 3-char
 // extension. FAT cannot create long/LFN names.
 const PROGRESS_DIR: &str = "/READER";
+
+// 9x15 monospace u8g2 fonts: a Latin-extended face (ASCII + accents), a
+// Cyrillic fallback, and an ASCII bold face. all share the 9px cell, so the
+// fixed-width wrapping math is unchanged; glyphs are routed per-character by
+// Unicode range.
+static FONT_REGULAR: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_te>();
+static FONT_CYRILLIC: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15_t_cyrillic>();
+static FONT_BOLD: FontRenderer = FontRenderer::new::<fonts::u8g2_font_9x15B_tr>();
 
 struct Segment {
     text: String,
@@ -290,15 +300,35 @@ fn read_progress(card: &SdCard, key: u32) -> (usize, usize) {
 fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, force_bold: bool) {
     let mut x = MARGIN_X;
     for segment in segments {
-        let style = if force_bold || segment.bold {
-            MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK)
-        } else {
-            MonoTextStyle::new(&FONT_9X15, Gray4::BLACK)
-        };
-        Text::new(&segment.text, Point::new(x, baseline), style)
-            .draw(display)
-            .ok();
-        x += segment.text.chars().count() as i32 * CHAR_W;
+        let bold = force_bold || segment.bold;
+        for ch in segment.text.chars() {
+            let pos = Point::new(x, baseline);
+            let color = FontColor::Transparent(Gray4::BLACK);
+            // fall back to '?' for glyphs no face has (e.g. Greek, CJK).
+            if pick_font(ch, bold)
+                .render(ch, pos, VerticalPosition::Baseline, color, display)
+                .is_err()
+            {
+                FONT_REGULAR
+                    .render('?', pos, VerticalPosition::Baseline, color, display)
+                    .ok();
+            }
+            x += CHAR_W;
+        }
+    }
+}
+
+// route a glyph to a face that has it: Cyrillic to the Cyrillic font, ASCII in
+// bold context to the bold face, everything else (incl. accented Latin) to the
+// regular face. all three share the 9px advance, so x steps by CHAR_W per
+// glyph.
+fn pick_font(ch: char, bold: bool) -> &'static FontRenderer {
+    if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+        &FONT_CYRILLIC
+    } else if bold && ch.is_ascii() {
+        &FONT_BOLD
+    } else {
+        &FONT_REGULAR
     }
 }
 
@@ -451,7 +481,8 @@ fn wrap(spans: &[Span]) -> Vec<Vec<Segment>> {
 
     for span in spans {
         let bold = span.style().contains(Style::BOLD);
-        for word in span.text().split_whitespace() {
+        let text = asciify(span.text());
+        for word in text.split_whitespace() {
             let word_len = word.chars().count();
 
             if word_len > CHARS_PER_LINE {
@@ -513,6 +544,28 @@ fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bo
         }
     }
     *current_len += 1 + word_len;
+}
+
+// normalize typographic punctuation that the fonts lack (dashes, ellipsis,
+// curly quotes, exotic spaces) to ASCII; pass letters through so the Cyrillic /
+// Latin-extended faces can render them. done before wrapping so column counts
+// stay accurate.
+fn asciify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{2014}' | '\u{2015}' => out.push_str("--"),
+            '\u{2013}' => out.push('-'),
+            '\u{2011}' => out.push('-'),
+            '\u{2018}' | '\u{2019}' | '\u{201B}' => out.push('\''),
+            '\u{201C}' | '\u{201D}' | '\u{201F}' => out.push('"'),
+            '\u{2026}' => out.push_str("..."),
+            '\u{00A0}' | '\u{2007}' | '\u{202F}' => out.push(' '),
+            '\u{00AD}' => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn progress_path(key: u32) -> String {
