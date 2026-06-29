@@ -11,8 +11,8 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotUtf8`] if `bytes` is not valid UTF-8, or [`Error::Empty`]
-/// if the input holds no renderable text.
+/// Returns [`Error::NotUtf8`] if `bytes` is not valid UTF-8, or
+/// [`Error::Empty`] if the input holds no renderable text.
 pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
     let text = core::str::from_utf8(bytes).map_err(Error::NotUtf8)?;
 

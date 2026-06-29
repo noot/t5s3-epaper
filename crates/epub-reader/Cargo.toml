@@ -10,9 +10,6 @@ repository = "https://github.com/azw413/lilygo-t5s3paperpro-rs"
 bitflags = { version = "2.6", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 
-[profile.release]
-opt-level = "s"
-
 # isolate this crate from the embedded repo root so its tests build for the host
 # with a stable toolchain rather than the esp32 target the root .cargo/config
 # forces on everything beneath it. consumed by the firmware as a no_std path

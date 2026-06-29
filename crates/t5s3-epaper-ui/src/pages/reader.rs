@@ -1,0 +1,362 @@
+use alloc::{format, string::String, vec, vec::Vec};
+
+use embedded_graphics::{
+    mono_font::{
+        ascii::{FONT_9X15, FONT_9X18_BOLD},
+        MonoTextStyle,
+    },
+    prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
+    text::{Alignment, Text},
+};
+use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
+use epub_reader::{parse_markdown, parse_txt, Block, Document, Span, Style};
+use esp_hal::gpio::{Level, Output, OutputConfig};
+use t5s3_epaper_core::{
+    sdcard::{Error, PinConfig},
+    Display,
+    SdCard,
+};
+
+use crate::layout::{SCREEN_W, STATUS_H};
+
+const MARGIN_X: i32 = 24;
+const CONTENT_TOP: i32 = 70;
+const CONTENT_BOTTOM: i32 = 905;
+const CONTENT_H: i32 = CONTENT_BOTTOM - CONTENT_TOP;
+const LINE_H: i32 = 24;
+const BLANK_H: i32 = 12;
+const CHAR_W: i32 = 9;
+const FOOTER_Y: i32 = 935;
+const PREV_ZONE_W: i32 = 180;
+const CHARS_PER_LINE: usize = ((SCREEN_W - 2 * MARGIN_X) / CHAR_W) as usize;
+const PROGRESS_DIR: &str = "/.reader";
+
+struct Segment {
+    text: String,
+    bold: bool,
+}
+
+// a laid-out display line. heights drive pagination; `Blank` is the gap between
+// paragraphs and around headings.
+enum Line {
+    Blank,
+    Rule,
+    Text(Vec<Segment>),
+    Heading(Vec<Segment>),
+}
+
+impl Line {
+    fn height(&self) -> i32 {
+        match self {
+            Line::Blank => BLANK_H,
+            _ => LINE_H,
+        }
+    }
+}
+
+// a paginated document ready to render: every wrapped display line plus the
+// line index each page starts at.
+pub(crate) struct ReaderDoc {
+    lines: Vec<Line>,
+    pages: Vec<usize>,
+}
+
+impl ReaderDoc {
+    pub(crate) fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+}
+
+pub(crate) enum Tap {
+    Prev,
+    Next,
+    None,
+}
+
+pub(crate) fn is_reader(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ext.eq_ignore_ascii_case("txt")
+            || ext.eq_ignore_ascii_case("md")
+            || ext.eq_ignore_ascii_case("markdown")
+    })
+}
+
+// read a supported text file from the card and lay it out into pages. mounts
+// the card the same self-contained way as the file browser. returns None (after
+// logging) if the card, file, or parse fails so the caller can show a message.
+pub(crate) fn load_document(path: &str) -> Option<ReaderDoc> {
+    let (_lora_cs, card) = match mount() {
+        Ok(card) => card,
+        Err(e) => {
+            esp_println::println!("reader: sd init failed: {e:?}");
+            return None;
+        }
+    };
+    let bytes = match card.read_file(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            esp_println::println!("reader: read {path} failed: {e:?}");
+            return None;
+        }
+    };
+
+    let ext = path.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let parsed = if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
+        parse_markdown(&bytes)
+    } else if ext.eq_ignore_ascii_case("txt") {
+        parse_txt(&bytes)
+    } else {
+        return None;
+    };
+    let doc = match parsed {
+        Ok(doc) => doc,
+        Err(e) => {
+            esp_println::println!("reader: parse {path} failed: {e}");
+            return None;
+        }
+    };
+
+    let lines = layout(&doc);
+    let pages = paginate(&lines);
+    Some(ReaderDoc { lines, pages })
+}
+
+pub(crate) fn draw_page(display: &mut Display, doc: &ReaderDoc, page: usize) {
+    let page = page.min(doc.pages.len().saturating_sub(1));
+    let start = doc.pages[page];
+    let end = doc.pages.get(page + 1).copied().unwrap_or(doc.lines.len());
+
+    let mut y = CONTENT_TOP + 18;
+    for line in &doc.lines[start..end] {
+        match line {
+            Line::Blank => {}
+            Line::Rule => {
+                Rectangle::new(
+                    Point::new(MARGIN_X, y - 8),
+                    Size::new((SCREEN_W - 2 * MARGIN_X) as u32, 2),
+                )
+                .into_styled(PrimitiveStyle::with_fill(Gray4::new(6)))
+                .draw(display)
+                .ok();
+            }
+            Line::Text(segments) => draw_segments(display, segments, y, false),
+            Line::Heading(segments) => draw_segments(display, segments, y, true),
+        }
+        y += line.height();
+    }
+
+    let footer = format!("< prev    {} / {}    next >", page + 1, doc.pages.len());
+    Text::with_alignment(
+        &footer,
+        Point::new(SCREEN_W / 2, FOOTER_Y),
+        MonoTextStyle::new(&FONT_9X15, Gray4::new(4)),
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+}
+
+pub(crate) fn tap_zone(sx: i32, sy: i32) -> Tap {
+    if sy < STATUS_H {
+        Tap::None
+    } else if sx < PREV_ZONE_W {
+        Tap::Prev
+    } else {
+        Tap::Next
+    }
+}
+
+pub(crate) fn save_progress(path: &str, page: usize) {
+    let (_lora_cs, card) = match mount() {
+        Ok(card) => card,
+        Err(_) => return,
+    };
+    card.create_dir_all(PROGRESS_DIR).ok();
+    if let Err(e) = card.write_file(&progress_path(path), format!("{page}").as_bytes()) {
+        esp_println::println!("reader: save progress failed: {e:?}");
+    }
+}
+
+pub(crate) fn load_progress(path: &str) -> usize {
+    let (_lora_cs, card) = match mount() {
+        Ok(card) => card,
+        Err(_) => return 0,
+    };
+    match card.read_file(&progress_path(path)) {
+        Ok(bytes) => core::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+fn draw_segments(display: &mut Display, segments: &[Segment], baseline: i32, force_bold: bool) {
+    let mut x = MARGIN_X;
+    for segment in segments {
+        let style = if force_bold || segment.bold {
+            MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK)
+        } else {
+            MonoTextStyle::new(&FONT_9X15, Gray4::BLACK)
+        };
+        Text::new(&segment.text, Point::new(x, baseline), style)
+            .draw(display)
+            .ok();
+        x += segment.text.chars().count() as i32 * CHAR_W;
+    }
+}
+
+fn layout(doc: &Document) -> Vec<Line> {
+    let mut lines = Vec::new();
+    for chapter in doc.chapters() {
+        for block in chapter.blocks() {
+            match block {
+                Block::Heading { spans, .. } => {
+                    if !lines.is_empty() {
+                        lines.push(Line::Blank);
+                    }
+                    for segments in wrap(spans) {
+                        lines.push(Line::Heading(segments));
+                    }
+                    lines.push(Line::Blank);
+                }
+                Block::Paragraph(spans) => {
+                    for segments in wrap(spans) {
+                        lines.push(Line::Text(segments));
+                    }
+                    lines.push(Line::Blank);
+                }
+                Block::Rule => lines.push(Line::Rule),
+                Block::Image { href } => {
+                    lines.push(Line::Text(vec![Segment {
+                        text: format!("[image: {href}]"),
+                        bold: false,
+                    }]));
+                }
+            }
+        }
+    }
+    lines
+}
+
+fn paginate(lines: &[Line]) -> Vec<usize> {
+    let mut starts = vec![0];
+    let mut height = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let line_h = line.height();
+        if height > 0 && height + line_h > CONTENT_H {
+            starts.push(i);
+            height = 0;
+        }
+        height += line_h;
+    }
+    starts
+}
+
+// greedy word-wrap a paragraph's styled spans into display lines of at most
+// CHARS_PER_LINE columns. words longer than a line are hard-split. italic and
+// inline-code fall back to the regular face; only bold has a distinct font.
+fn wrap(spans: &[Span]) -> Vec<Vec<Segment>> {
+    let mut lines: Vec<Vec<Segment>> = Vec::new();
+    let mut current: Vec<Segment> = Vec::new();
+    let mut current_len = 0;
+
+    for span in spans {
+        let bold = span.style().contains(Style::BOLD);
+        for word in span.text().split_whitespace() {
+            let word_len = word.chars().count();
+
+            if word_len > CHARS_PER_LINE {
+                if current_len > 0 {
+                    lines.push(core::mem::take(&mut current));
+                    current_len = 0;
+                }
+                let mut chars = word.chars().peekable();
+                while chars.peek().is_some() {
+                    let chunk: String = chars.by_ref().take(CHARS_PER_LINE).collect();
+                    let chunk_len = chunk.chars().count();
+                    if chunk_len == CHARS_PER_LINE {
+                        lines.push(vec![Segment { text: chunk, bold }]);
+                    } else {
+                        current.push(Segment { text: chunk, bold });
+                        current_len = chunk_len;
+                    }
+                }
+                continue;
+            }
+
+            let needed = if current_len == 0 {
+                word_len
+            } else {
+                current_len + 1 + word_len
+            };
+            if current_len > 0 && needed > CHARS_PER_LINE {
+                lines.push(core::mem::take(&mut current));
+                current_len = 0;
+            }
+            push_word(&mut current, &mut current_len, word, bold);
+        }
+    }
+    if current_len > 0 {
+        lines.push(current);
+    }
+    lines
+}
+
+fn push_word(current: &mut Vec<Segment>, current_len: &mut usize, word: &str, bold: bool) {
+    let word_len = word.chars().count();
+    if *current_len == 0 {
+        current.push(Segment {
+            text: String::from(word),
+            bold,
+        });
+        *current_len = word_len;
+        return;
+    }
+    match current.last_mut() {
+        Some(last) if last.bold == bold => {
+            last.text.push(' ');
+            last.text.push_str(word);
+        }
+        _ => {
+            let mut text = String::from(" ");
+            text.push_str(word);
+            current.push(Segment { text, bold });
+        }
+    }
+    *current_len += 1 + word_len;
+}
+
+fn progress_path(path: &str) -> String {
+    format!("{PROGRESS_DIR}/{:016x}.pos", fnv1a(path))
+}
+
+fn fnv1a(s: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+// mount the SD card, mirroring the file browser: steal the shared SPI2 pins and
+// hold the LoRa chip-select high to release MISO. the returned guard must stay
+// alive for the duration of card access.
+fn mount() -> Result<(Output<'static>, SdCard<'static>), Error> {
+    let lora_cs = Output::new(
+        unsafe { esp_hal::peripherals::GPIO46::steal() },
+        Level::High,
+        OutputConfig::default(),
+    );
+    let pins = PinConfig {
+        miso: unsafe { esp_hal::peripherals::GPIO21::steal() },
+        mosi: unsafe { esp_hal::peripherals::GPIO13::steal() },
+        sclk: unsafe { esp_hal::peripherals::GPIO14::steal() },
+        cs: unsafe { esp_hal::peripherals::GPIO12::steal() },
+    };
+    let spi = unsafe { esp_hal::peripherals::SPI2::steal() };
+    let card = SdCard::new(pins, spi)?;
+    Ok((lora_cs, card))
+}

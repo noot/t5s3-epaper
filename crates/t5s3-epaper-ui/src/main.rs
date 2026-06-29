@@ -109,6 +109,16 @@ use crate::{
             RECV_Y,
             SENT_Y,
         },
+        reader::{
+            draw_page,
+            is_reader,
+            load_document,
+            load_progress,
+            save_progress,
+            tap_zone,
+            ReaderDoc,
+            Tap,
+        },
         sleep::{draw_screensaver, draw_sleep_screen, show_wallpaper, sleep_now_hit},
     },
     screen::Screen,
@@ -282,6 +292,14 @@ async fn main(_spawner: Spawner) -> ! {
     // path of the .bmp currently shown full-screen by the image viewer.
     let mut image_path = String::new();
 
+    // reader state: the open text file, its paginated document (None if the
+    // load failed), the current page, and a flag that the document needs
+    // (re)loading from the card on the next pass (mirrors `files_dirty`).
+    let mut reader_path = String::new();
+    let mut reader_doc: Option<ReaderDoc> = None;
+    let mut reader_page: usize = 0;
+    let mut reader_dirty = false;
+
     #[cfg(feature = "gps")]
     let mut gps_refresh: u16 = 0;
     // last good position, kept so a dropped fix shows the previous coordinates
@@ -377,6 +395,22 @@ async fn main(_spawner: Spawner) -> ! {
                     }
                     draw_back_button(&mut display);
                 }
+                Screen::Reader => {
+                    draw_back_button(&mut display);
+                    match &reader_doc {
+                        Some(doc) => draw_page(&mut display, doc, reader_page),
+                        None => {
+                            Text::with_alignment(
+                                "cannot open file",
+                                Point::new(SCREEN_W / 2, 400),
+                                MonoTextStyle::new(&FONT_9X15, Gray4::BLACK),
+                                Alignment::Center,
+                            )
+                            .draw(&mut display)
+                            .ok();
+                        }
+                    }
+                }
             }
             display.flush(DrawMode::BlackOnWhite).expect("to flush");
             needs_redraw = false;
@@ -430,6 +464,9 @@ async fn main(_spawner: Spawner) -> ! {
         let input = display.input().expect("to read input");
 
         if input.buttons.home && current_screen != Screen::Home {
+            if current_screen == Screen::Reader {
+                save_progress(&reader_path, reader_page);
+            }
             current_screen = Screen::Home;
             needs_redraw = true;
         }
@@ -600,6 +637,10 @@ async fn main(_spawner: Spawner) -> ! {
                                             image_path = entry.path.clone();
                                             current_screen = Screen::Image;
                                             needs_redraw = true;
+                                        } else if is_reader(&entry.name) {
+                                            reader_path = entry.path.clone();
+                                            reader_dirty = true;
+                                            current_screen = Screen::Reader;
                                         } else {
                                             files_status =
                                                 format!("{} - {} bytes", entry.name, entry.size);
@@ -617,6 +658,29 @@ async fn main(_spawner: Spawner) -> ! {
                         // any tap dismisses the image and returns to the listing.
                         current_screen = Screen::Files;
                         needs_redraw = true;
+                    }
+                    Screen::Reader => {
+                        if back_button_hit(sx, sy) {
+                            save_progress(&reader_path, reader_page);
+                            current_screen = Screen::Files;
+                            needs_redraw = true;
+                        } else if let Some(doc) = &reader_doc {
+                            match tap_zone(sx, sy) {
+                                Tap::Prev => {
+                                    if reader_page > 0 {
+                                        reader_page -= 1;
+                                        needs_redraw = true;
+                                    }
+                                }
+                                Tap::Next => {
+                                    if reader_page + 1 < doc.page_count() {
+                                        reader_page += 1;
+                                        needs_redraw = true;
+                                    }
+                                }
+                                Tap::None => {}
+                            }
+                        }
                     }
                     _ => {
                         if back_button_hit(sx, sy) {
@@ -647,6 +711,23 @@ async fn main(_spawner: Spawner) -> ! {
                     files_entries = Vec::new();
                     files_status = String::from("SD read failed");
                 }
+            }
+            needs_redraw = true;
+        }
+
+        // (re)load and paginate the open text file when the reader is entered.
+        // mounting the card is self-contained, so this is safe any time we're on
+        // the Reader screen. progress is restored to the saved page, clamped to
+        // the document's length.
+        if current_screen == Screen::Reader && reader_dirty {
+            reader_dirty = false;
+            match load_document(&reader_path) {
+                Some(doc) => {
+                    reader_page =
+                        load_progress(&reader_path).min(doc.page_count().saturating_sub(1));
+                    reader_doc = Some(doc);
+                }
+                None => reader_doc = None,
             }
             needs_redraw = true;
         }
@@ -734,6 +815,10 @@ async fn main(_spawner: Spawner) -> ! {
     // the lora CS; standby and release them so the SD wallpaper can use the bus.
     if let Some(mut r) = radio.take() {
         r.standby().ok();
+    }
+    // persist reading progress if we slept straight from the reader.
+    if current_screen == Screen::Reader {
+        save_progress(&reader_path, reader_page);
     }
     // remember where we were so wake lands on the same screen. single-threaded,
     // so writing the RTC-backed static is sound.
