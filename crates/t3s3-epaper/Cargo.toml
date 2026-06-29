@@ -1,0 +1,67 @@
+[package]
+name = "lilygo-t3s3-epaper"
+version = "0.1.0"
+edition = "2024"
+
+# the library is pure embedded-hal, so it stays platform-agnostic and testable.
+[dependencies]
+embedded-hal = "1.0"
+embedded-graphics-core = "0.4"
+
+# the esp32-s3 platform glue is only needed to build and run the examples.
+[dev-dependencies]
+# esp-hal 1.0.0 has a full-duplex-after-half-duplex SPI bug (esp-rs/esp-hal#3122)
+# that breaks SX1262 register reads; fixed by #3176 in 1.1.x — require >= 1.1.
+esp-hal = { version = "1.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.5", features = ["esp32s3"] }
+esp-backtrace = { version = "0.19", features = ["esp32s3", "panic-handler", "println"] }
+esp-println = { version = "0.17", features = ["esp32s3", "log-04"] }
+embedded-hal-bus = "0.3"
+embedded-graphics = "0.8"
+
+# radio stack shared by the `ble` and `wifi_lora_bridge` examples. esp-radio is
+# the wifi/ble controller and esp-rtos the preemptive scheduler the radio
+# firmware requires; the feature sets are the union the two examples need (`ble`
+# for the NUS bridge, `wifi` for the soft-AP bridge). esp-radio 0.18 + esp-rtos
+# 0.3 are the esp-hal 1.1 line. this corner of the ecosystem churns — re-pin if
+# cargo can't resolve.
+esp-radio = { version = "0.18", features = ["esp32s3", "ble", "wifi", "unstable", "log-04"] }
+esp-rtos = { version = "0.3", features = ["esp32s3", "embassy", "esp-radio", "esp-alloc"] }
+esp-alloc = "0.10"
+
+# `ble` example (trouble-host BLE stack): these must be a matched set — esp-radio
+# and trouble-host bridge through bt-hci 0.8, and the gatt macros expand to
+# `embassy_sync::` paths, so it's a direct dep. heapless must match trouble-host's
+# (0.9), or its AsGatt impl for Vec<u8, N> won't apply to ours.
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+embassy-sync = "0.7"
+static_cell = "2"
+trouble-host = { version = "0.6", features = ["default-packet-pool-mtu-255"] }
+heapless = "0.9"
+
+# `wifi_lora_bridge` example: smoltcp is the TCP/IP stack the example drives
+# directly (AP bring-up, a small DHCP server, and the HTTP server).
+smoltcp = { version = "0.13", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+] }
+
+# esp-hal strongly recommends building dependencies with optimizations even in dev.
+[profile.dev.package.esp-hal]
+opt-level = 3
+
+# esp-radio's docs require opt-level 2 or 3, otherwise the wifi driver misbehaves;
+# the esp-rtos scheduler is timing-sensitive too.
+[profile.dev.package.esp-radio]
+opt-level = 3
+
+[profile.dev.package.esp-rtos]
+opt-level = 3
+
+[profile.dev]
+opt-level = "s"
