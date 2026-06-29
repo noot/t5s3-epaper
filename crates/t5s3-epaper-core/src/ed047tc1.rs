@@ -207,13 +207,26 @@ impl<'a> ConfigWriter<'a> {
         }
         // GT911 sits on the always-on 3.3 V rail and keeps scanning (~3-4 mA)
         // until told to sleep. It only latches the 0x05 sleep command with INT
-        // held low, so assert INT first. A hardware reset on the next boot
-        // (see `touch_reset_for_address`) wakes it.
+        // held low, so assert INT first.
         self.touch_int.set_low();
         self.touch_int.set_output_enable(true);
         self.touch_int.set_input_enable(false);
         busy_delay(30_000);
-        self.write_register16(self.touch_addr, GT911_COMMAND, &[GT911_CMD_SLEEP])
+        let cmd = self.write_register16(self.touch_addr, GT911_COMMAND, &[GT911_CMD_SLEEP]);
+
+        // The command alone is not enough: once the pin is released the INT
+        // pull-up floats high, which is the GT911 wake trigger, so it resumes
+        // scanning. Hold RST low instead, keeping the chip in reset for the
+        // whole deep sleep. `touch_reset_for_address` resets it on the next boot.
+        self.touch_rst.set_low();
+        busy_delay(30_000);
+        // SAFETY: GPIO9 is owned by `self.touch_rst`, which is driving it low
+        // right now. `rtcio_pad_hold` only sets the LP_AON hold latch and does
+        // not touch the output registers the live `Output` drives. The latch
+        // freezes the pad low across deep sleep and is cleared by the matching
+        // `rtcio_pad_hold(false)` in `new`.
+        unsafe { peripherals::GPIO9::steal() }.rtcio_pad_hold(true);
+        cmd
     }
 
     fn set_stv(&mut self, level: bool) {

@@ -1,7 +1,11 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 use core::time::Duration;
 
-use esp_hal::{delay::Delay, peripherals};
+use esp_hal::{
+    delay::Delay,
+    gpio::{Level, Output, OutputConfig, RtcPin},
+    peripherals,
+};
 use log::*;
 
 use crate::{ed047tc1, input::InputState, touchscreen::TouchState, Error, Result};
@@ -171,6 +175,17 @@ impl<'a> Display<'a> {
         if let Err(err) = self.epd.lora_gps_power_off() {
             warn!("lora/gps power off before sleep failed: {:?}", err);
         }
+
+        // With that rail cut the SX1262 is unpowered, but its reset line idles
+        // high and would back-power the dead chip through its pull-up. Drive
+        // GPIO1 low and latch the pad for deep sleep to stop the leak.
+        // SAFETY: callers drop the radio before deep sleep, so GPIO1 is unused;
+        // we take exclusive control here and never return. `Lora::new` clears
+        // the hold before re-driving the line.
+        let lora_rst_pin = unsafe { peripherals::GPIO1::steal() };
+        lora_rst_pin.rtcio_pad_hold(false);
+        let _lora_rst = Output::new(lora_rst_pin, Level::Low, OutputConfig::default());
+        unsafe { peripherals::GPIO1::steal() }.rtcio_pad_hold(true);
 
         let boot_button = self.epd.into_boot_button();
         crate::power::deep_sleep(lpwr, boot_button, timer)

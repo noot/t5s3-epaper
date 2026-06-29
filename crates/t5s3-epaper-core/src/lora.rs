@@ -1,7 +1,7 @@
 use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
     delay::Delay,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig},
+    gpio::{Input, InputConfig, Level, Output, OutputConfig, RtcPin},
     peripherals,
     spi::{
         master::{Config as SpiConfig, ConfigError as SpiConfigError, Spi},
@@ -217,6 +217,11 @@ impl<'d> Lora<'d> {
         .with_sck(pins.sclk)
         .with_mosi(pins.mosi)
         .with_miso(pins.miso);
+
+        // deep sleep holds RST low to stop the unpowered SX1262 being
+        // back-powered through its reset pull-up; release that hold before
+        // driving the line again.
+        pins.rst.rtcio_pad_hold(false);
 
         let mut radio = Self {
             spi,
