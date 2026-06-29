@@ -1,25 +1,18 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::{
+    image::Image,
     mono_font::{
         ascii::{FONT_6X10, FONT_9X18_BOLD},
         MonoTextStyle,
     },
     prelude::*,
-    primitives::{
-        Arc,
-        Circle,
-        Line,
-        PrimitiveStyle,
-        PrimitiveStyleBuilder,
-        Rectangle,
-        RoundedRectangle,
-        Triangle,
-    },
+    primitives::{PrimitiveStyleBuilder, Rectangle, RoundedRectangle},
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use t5s3_epaper_core::Display;
+use tinybmp::Bmp;
 
 use crate::{
     datetime::{DAY_NAMES, MONTH_NAMES},
@@ -94,148 +87,31 @@ pub(crate) fn hit_test(sx: i32, sy: i32) -> Option<usize> {
     None
 }
 
-fn draw_glyph(display: &mut Display, screen: Screen, cx: i32, cy: i32) {
-    let fill = PrimitiveStyle::with_fill(Gray4::BLACK);
-    let white = PrimitiveStyle::with_fill(Gray4::WHITE);
-    let line = PrimitiveStyleBuilder::new()
-        .stroke_color(Gray4::BLACK)
-        .stroke_width(4)
-        .build();
-    let outline = PrimitiveStyleBuilder::new()
-        .stroke_color(Gray4::BLACK)
-        .stroke_width(4)
-        .fill_color(Gray4::WHITE)
-        .build();
+const ICON_PX: i32 = 100;
 
-    match screen {
-        Screen::Gps => {
-            // location pin: solid teardrop with a hole punched out
-            Circle::with_center(Point::new(cx, cy - 6), 54)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            Triangle::new(
-                Point::new(cx - 26, cy + 2),
-                Point::new(cx + 26, cy + 2),
-                Point::new(cx, cy + 48),
-            )
-            .into_styled(fill)
-            .draw(display)
-            .ok();
-            Circle::with_center(Point::new(cx, cy - 6), 18)
-                .into_styled(white)
-                .draw(display)
-                .ok();
-        }
-        Screen::Lora => {
-            // broadcast: a dot with signal arcs radiating upward
-            let base = Point::new(cx, cy);
-            Circle::with_center(base, 14)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            for dia in [38u32, 64, 90] {
-                Arc::with_center(base, dia, 50.0_f32.deg(), 80.0_f32.deg())
-                    .into_styled(line)
-                    .draw(display)
-                    .ok();
-            }
-        }
-        Screen::Frontlight => {
-            // sun: filled disc with eight rays
-            Circle::with_center(Point::new(cx, cy), 34)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            let rays = [
-                (0, -24, 0, -40),
-                (0, 24, 0, 40),
-                (-24, 0, -40, 0),
-                (24, 0, 40, 0),
-                (17, -17, 28, -28),
-                (-17, -17, -28, -28),
-                (17, 17, 28, 28),
-                (-17, 17, -28, 28),
-            ];
-            for (x0, y0, x1, y1) in rays {
-                Line::new(Point::new(cx + x0, cy + y0), Point::new(cx + x1, cy + y1))
-                    .into_styled(line)
-                    .draw(display)
-                    .ok();
-            }
-        }
-        Screen::Sleep => {
-            // crescent moon: carve a white disc out of a black one
-            Circle::with_center(Point::new(cx - 2, cy), 60)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            Circle::with_center(Point::new(cx + 16, cy - 8), 52)
-                .into_styled(white)
-                .draw(display)
-                .ok();
-        }
-        Screen::Info => {
-            // "i" inside a ring
-            Circle::with_center(Point::new(cx, cy), 60)
-                .into_styled(outline)
-                .draw(display)
-                .ok();
-            Circle::with_center(Point::new(cx, cy - 16), 9)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            RoundedRectangle::with_equal_corners(
-                Rectangle::new(Point::new(cx - 4, cy - 4), Size::new(8, 26)),
-                Size::new(3, 3),
-            )
-            .into_styled(fill)
-            .draw(display)
-            .ok();
-        }
-        Screen::Files => {
-            // folder: a tab above an outlined body
-            Rectangle::new(Point::new(cx - 34, cy - 22), Size::new(26, 12))
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            RoundedRectangle::with_equal_corners(
-                Rectangle::new(Point::new(cx - 36, cy - 12), Size::new(72, 46)),
-                Size::new(6, 6),
-            )
-            .into_styled(outline)
-            .draw(display)
-            .ok();
-        }
-        Screen::Settings => {
-            // gear: a toothed ring with a hole punched out of the centre
-            let teeth = [
-                (0, -27),
-                (0, 27),
-                (-27, 0),
-                (27, 0),
-                (19, -19),
-                (-19, -19),
-                (20, 20),
-                (-19, 19),
-            ];
-            for (dx, dy) in teeth {
-                Rectangle::new(Point::new(cx + dx - 5, cy + dy - 5), Size::new(10, 10))
-                    .into_styled(fill)
-                    .draw(display)
-                    .ok();
-            }
-            Circle::with_center(Point::new(cx, cy), 52)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            Circle::with_center(Point::new(cx, cy), 22)
-                .into_styled(white)
-                .draw(display)
-                .ok();
-        }
-        Screen::Home | Screen::Image | Screen::Reader => {}
-    }
+fn icon_bytes(screen: Screen) -> Option<&'static [u8]> {
+    Some(match screen {
+        Screen::Gps => include_bytes!("../../assets/icons/gps.bmp"),
+        Screen::Lora => include_bytes!("../../assets/icons/lora.bmp"),
+        Screen::Frontlight => include_bytes!("../../assets/icons/light.bmp"),
+        Screen::Sleep => include_bytes!("../../assets/icons/sleep.bmp"),
+        Screen::Files => include_bytes!("../../assets/icons/files.bmp"),
+        Screen::Info => include_bytes!("../../assets/icons/info.bmp"),
+        Screen::Settings => include_bytes!("../../assets/icons/settings.bmp"),
+        Screen::Home | Screen::Image | Screen::Reader => return None,
+    })
+}
+
+fn draw_glyph(display: &mut Display, screen: Screen, cx: i32, cy: i32) {
+    let Some(bytes) = icon_bytes(screen) else {
+        return;
+    };
+    let Ok(bmp) = Bmp::<Gray4>::from_slice(bytes) else {
+        return;
+    };
+    Image::new(&bmp, Point::new(cx - ICON_PX / 2, cy - ICON_PX / 2))
+        .draw(display)
+        .ok();
 }
 
 pub(crate) fn draw_home(display: &mut Display, date: Option<(usize, i64, u32, u32)>) {
