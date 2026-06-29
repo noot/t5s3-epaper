@@ -40,7 +40,7 @@ pub(crate) struct Icon {
     pub(crate) screen: Screen,
 }
 
-pub(crate) const ICONS: [Icon; 6] = [
+pub(crate) const ICONS: [Icon; 7] = [
     Icon {
         label: "GPS",
         screen: Screen::Gps,
@@ -64,6 +64,10 @@ pub(crate) const ICONS: [Icon; 6] = [
     Icon {
         label: "Info",
         screen: Screen::Info,
+    },
+    Icon {
+        label: "Settings",
+        screen: Screen::Settings,
     },
 ];
 
@@ -203,7 +207,34 @@ fn draw_glyph(display: &mut Display, screen: Screen, cx: i32, cy: i32) {
             .draw(display)
             .ok();
         }
-        Screen::Home | Screen::Image => {}
+        Screen::Settings => {
+            // gear: a toothed ring with a hole punched out of the centre
+            let teeth = [
+                (0, -27),
+                (0, 27),
+                (-27, 0),
+                (27, 0),
+                (19, -19),
+                (-19, -19),
+                (20, 20),
+                (-19, 19),
+            ];
+            for (dx, dy) in teeth {
+                Rectangle::new(Point::new(cx + dx - 5, cy + dy - 5), Size::new(10, 10))
+                    .into_styled(fill)
+                    .draw(display)
+                    .ok();
+            }
+            Circle::with_center(Point::new(cx, cy), 52)
+                .into_styled(fill)
+                .draw(display)
+                .ok();
+            Circle::with_center(Point::new(cx, cy), 22)
+                .into_styled(white)
+                .draw(display)
+                .ok();
+        }
+        Screen::Home | Screen::Image | Screen::Reader => {}
     }
 }
 
