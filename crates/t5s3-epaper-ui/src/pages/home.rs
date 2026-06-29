@@ -1,31 +1,25 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::{
+    image::Image,
     mono_font::{
         ascii::{FONT_6X10, FONT_9X18_BOLD},
         MonoTextStyle,
     },
     prelude::*,
-    primitives::{
-        Arc,
-        Circle,
-        Line,
-        PrimitiveStyle,
-        PrimitiveStyleBuilder,
-        Rectangle,
-        RoundedRectangle,
-        Triangle,
-    },
+    primitives::{PrimitiveStyleBuilder, Rectangle, RoundedRectangle},
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
 use t5s3_epaper_core::Display;
+use tinybmp::Bmp;
 
 use crate::{
     datetime::{DAY_NAMES, MONTH_NAMES},
     fmt::FmtBuf,
     layout::{SCREEN_W, STATUS_H},
     screen::Screen,
+    settings::{IconSize, IconStyle},
 };
 
 const COLS: usize = 3;
@@ -40,7 +34,7 @@ pub(crate) struct Icon {
     pub(crate) screen: Screen,
 }
 
-pub(crate) const ICONS: [Icon; 6] = [
+pub(crate) const ICONS: [Icon; 7] = [
     Icon {
         label: "GPS",
         screen: Screen::Gps,
@@ -64,6 +58,10 @@ pub(crate) const ICONS: [Icon; 6] = [
     Icon {
         label: "Info",
         screen: Screen::Info,
+    },
+    Icon {
+        label: "Settings",
+        screen: Screen::Settings,
     },
 ];
 
@@ -90,124 +88,59 @@ pub(crate) fn hit_test(sx: i32, sy: i32) -> Option<usize> {
     None
 }
 
-fn draw_glyph(display: &mut Display, screen: Screen, cx: i32, cy: i32) {
-    let fill = PrimitiveStyle::with_fill(Gray4::BLACK);
-    let white = PrimitiveStyle::with_fill(Gray4::WHITE);
-    let line = PrimitiveStyleBuilder::new()
-        .stroke_color(Gray4::BLACK)
-        .stroke_width(4)
-        .build();
-    let outline = PrimitiveStyleBuilder::new()
-        .stroke_color(Gray4::BLACK)
-        .stroke_width(4)
-        .fill_color(Gray4::WHITE)
-        .build();
-
-    match screen {
-        Screen::Gps => {
-            // location pin: solid teardrop with a hole punched out
-            Circle::with_center(Point::new(cx, cy - 6), 54)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            Triangle::new(
-                Point::new(cx - 26, cy + 2),
-                Point::new(cx + 26, cy + 2),
-                Point::new(cx, cy + 48),
-            )
-            .into_styled(fill)
-            .draw(display)
-            .ok();
-            Circle::with_center(Point::new(cx, cy - 6), 18)
-                .into_styled(white)
-                .draw(display)
-                .ok();
-        }
-        Screen::Lora => {
-            // broadcast: a dot with signal arcs radiating upward
-            let base = Point::new(cx, cy);
-            Circle::with_center(base, 14)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            for dia in [38u32, 64, 90] {
-                Arc::with_center(base, dia, 50.0_f32.deg(), 80.0_f32.deg())
-                    .into_styled(line)
-                    .draw(display)
-                    .ok();
+macro_rules! icon_set {
+    ($dir:literal, $screen:expr) => {
+        match $screen {
+            Screen::Gps => include_bytes!(concat!("../../assets/icons/", $dir, "/gps.bmp")),
+            Screen::Lora => include_bytes!(concat!("../../assets/icons/", $dir, "/lora.bmp")),
+            Screen::Frontlight => {
+                include_bytes!(concat!("../../assets/icons/", $dir, "/light.bmp"))
             }
-        }
-        Screen::Frontlight => {
-            // sun: filled disc with eight rays
-            Circle::with_center(Point::new(cx, cy), 34)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            let rays = [
-                (0, -24, 0, -40),
-                (0, 24, 0, 40),
-                (-24, 0, -40, 0),
-                (24, 0, 40, 0),
-                (17, -17, 28, -28),
-                (-17, -17, -28, -28),
-                (17, 17, 28, 28),
-                (-17, 17, -28, 28),
-            ];
-            for (x0, y0, x1, y1) in rays {
-                Line::new(Point::new(cx + x0, cy + y0), Point::new(cx + x1, cy + y1))
-                    .into_styled(line)
-                    .draw(display)
-                    .ok();
+            Screen::Sleep => include_bytes!(concat!("../../assets/icons/", $dir, "/sleep.bmp")),
+            Screen::Files => include_bytes!(concat!("../../assets/icons/", $dir, "/files.bmp")),
+            Screen::Info => include_bytes!(concat!("../../assets/icons/", $dir, "/info.bmp")),
+            Screen::Settings => {
+                include_bytes!(concat!("../../assets/icons/", $dir, "/settings.bmp"))
             }
+            Screen::Home | Screen::Image | Screen::Reader => return None,
         }
-        Screen::Sleep => {
-            // crescent moon: carve a white disc out of a black one
-            Circle::with_center(Point::new(cx - 2, cy), 60)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            Circle::with_center(Point::new(cx + 16, cy - 8), 52)
-                .into_styled(white)
-                .draw(display)
-                .ok();
-        }
-        Screen::Info => {
-            // "i" inside a ring
-            Circle::with_center(Point::new(cx, cy), 60)
-                .into_styled(outline)
-                .draw(display)
-                .ok();
-            Circle::with_center(Point::new(cx, cy - 16), 9)
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            RoundedRectangle::with_equal_corners(
-                Rectangle::new(Point::new(cx - 4, cy - 4), Size::new(8, 26)),
-                Size::new(3, 3),
-            )
-            .into_styled(fill)
-            .draw(display)
-            .ok();
-        }
-        Screen::Files => {
-            // folder: a tab above an outlined body
-            Rectangle::new(Point::new(cx - 34, cy - 22), Size::new(26, 12))
-                .into_styled(fill)
-                .draw(display)
-                .ok();
-            RoundedRectangle::with_equal_corners(
-                Rectangle::new(Point::new(cx - 36, cy - 12), Size::new(72, 46)),
-                Size::new(6, 6),
-            )
-            .into_styled(outline)
-            .draw(display)
-            .ok();
-        }
-        Screen::Home | Screen::Image => {}
-    }
+    };
 }
 
-pub(crate) fn draw_home(display: &mut Display, date: Option<(usize, i64, u32, u32)>) {
+fn icon_bytes(screen: Screen, style: IconStyle, size: IconSize) -> Option<&'static [u8]> {
+    Some(match (style, size) {
+        (IconStyle::Lucide, IconSize::Regular) => icon_set!("lucide/regular", screen),
+        (IconStyle::Lucide, IconSize::Small) => icon_set!("lucide/small", screen),
+        (IconStyle::Material, IconSize::Regular) => icon_set!("material/regular", screen),
+        (IconStyle::Material, IconSize::Small) => icon_set!("material/small", screen),
+    })
+}
+
+fn draw_glyph(
+    display: &mut Display,
+    screen: Screen,
+    style: IconStyle,
+    size: IconSize,
+    cx: i32,
+    cy: i32,
+) {
+    let Some(bytes) = icon_bytes(screen, style, size) else {
+        return;
+    };
+    let Ok(bmp) = Bmp::<Gray4>::from_slice(bytes) else {
+        return;
+    };
+    let dim = bmp.size();
+    let top_left = Point::new(cx - dim.width as i32 / 2, cy - dim.height as i32 / 2);
+    Image::new(&bmp, top_left).draw(display).ok();
+}
+
+pub(crate) fn draw_home(
+    display: &mut Display,
+    date: Option<(usize, i64, u32, u32)>,
+    icon_style: IconStyle,
+    icon_size: IconSize,
+) {
     let bold = MonoTextStyle::new(&FONT_9X18_BOLD, Gray4::BLACK);
     let small = MonoTextStyle::new(&FONT_6X10, Gray4::new(4));
 
@@ -250,7 +183,14 @@ pub(crate) fn draw_home(display: &mut Display, date: Option<(usize, i64, u32, u3
         .draw(display)
         .ok();
 
-        draw_glyph(display, icon.screen, x + ICON_W as i32 / 2, y + 80);
+        draw_glyph(
+            display,
+            icon.screen,
+            icon_style,
+            icon_size,
+            x + ICON_W as i32 / 2,
+            y + 80,
+        );
 
         Text::with_alignment(
             icon.label,

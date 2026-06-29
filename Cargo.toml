@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/t5s3-epaper-core", "crates/t5s3-epaper-ui", "crates/t3s3-epaper"]
-exclude = ["tools/wallpaper"]
+exclude = ["tools/wallpaper", "crates/epub-reader"]
 
 [workspace.package]
 version = "1.1.0"
@@ -16,6 +16,8 @@ esp-hal = { version = "1.1.1", features = ["esp32s3", "unstable"] }
 embedded-graphics-core = "0.4.0"
 esp-alloc = "0.10.0"
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
+esp-storage = { version = "0.9.0", features = ["esp32s3"] }
+embedded-storage = "0.3.1"
 log = "0.4.28"
 embedded-hal = "1.0.0"
 embedded-hal-bus = "0.3.0"
