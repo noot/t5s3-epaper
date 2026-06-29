@@ -57,11 +57,11 @@ use esp_hal::{
 };
 use esp_println::println;
 use esp_radio::ble::controller::BleConnector;
+use static_cell::StaticCell;
 use t3s3_epaper::{
     ssd1680::{Display, Rotation},
     sx1262::{Config as RadioConfig, Sx1262},
 };
-use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 esp_bootloader_esp_idf::esp_app_desc!();

@@ -57,16 +57,16 @@ use esp_radio::wifi::{
     WifiTxToken,
     ap::AccessPointConfig,
 };
-use t3s3_epaper::{
-    ssd1680::{Display, Rotation},
-    sx1262::{Config as RadioConfig, Sx1262},
-};
 use smoltcp::{
     iface::{Config as IfaceConfig, Interface as NetInterface, SocketSet},
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     socket::{tcp, udp},
     time::Instant as NetInstant,
     wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint},
+};
+use t3s3_epaper::{
+    ssd1680::{Display, Rotation},
+    sx1262::{Config as RadioConfig, Sx1262},
 };
 
 esp_bootloader_esp_idf::esp_app_desc!();

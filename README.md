@@ -1,4 +1,4 @@
-# LilyGo T5 S3 ePaper Pro
+# lilygo-epaper
 
 <p align="center">
   <img src="_docs/photo-1.jpg" width="32%" />
