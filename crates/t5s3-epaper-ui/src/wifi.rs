@@ -115,17 +115,15 @@ pub(crate) async fn sync_time(wifi: esp_hal::peripherals::WIFI<'static>) -> Opti
     }
 }
 
-// bring wifi up, GET `path` from noot-server, copy the response body into
-// `body`, then power the radio back down. mirrors `sync_time`: it drives the
-// network stack alongside the connect+request work via `select`, so everything
-// drops when the request finishes and WifiController's Drop deinitialises the
-// radio. returns the number of body bytes written to `body`, or None on any
-// failure.
+// bring wifi up, GET `path` from noot-server, then power the radio back down.
+// mirrors `sync_time`: it drives the network stack alongside the request work
+// via `select`, so everything drops when the request finishes and
+// WifiController's Drop deinitialises the radio. returns the response body, or
+// None on any failure. used by the environment page for its small json fetch.
 pub(crate) async fn http_get(
     wifi: esp_hal::peripherals::WIFI<'static>,
     path: &str,
-    body: &mut [u8],
-) -> Option<usize> {
+) -> Option<Vec<u8>> {
     let station_config = Config::Station(
         StationConfig::default()
             .with_ssid(SSID)
@@ -152,21 +150,87 @@ pub(crate) async fn http_get(
         with_timeout(Duration::from_secs(15), stack.wait_config_up())
             .await
             .ok()?;
-        with_timeout(Duration::from_secs(10), fetch_body(stack, path, body))
-            .await
-            .ok()?
+        request(stack, "GET", path, 8192).await
     })
     .await;
 
     match outcome {
         Either::First(_) => None,
-        Either::Second(n) => n,
+        Either::Second(body) => body,
     }
 }
 
-// resolve the server address (an IP literal, else a DNS lookup), open a TCP
-// connection, send a minimal HTTP/1.1 request, and return the response body.
-async fn fetch_body(stack: Stack<'_>, path: &str, body: &mut [u8]) -> Option<usize> {
+// the now-playing json plus the raw album-art bytes, fetched together in one
+// wifi session so opening the music page (or hitting a control) costs a single
+// radio bring-up.
+pub(crate) struct MusicSnapshot {
+    pub(crate) json: Vec<u8>,
+    pub(crate) cover: Option<Vec<u8>>,
+}
+
+// upper bound on the album-art body we'll buffer (raw jpeg/png). covers from
+// the backends are well under this; anything larger is dropped rather than
+// risking the heap.
+const MAX_COVER_BYTES: usize = 512 * 1024;
+
+// bring wifi up, optionally POST a transport `command` (play-pause/next/etc.),
+// then fetch the current now-playing json and album art, then power the radio
+// back down. doing it all in one session keeps the music page to a single wifi
+// bring-up per refresh. returns None if wifi never came up.
+pub(crate) async fn music_session(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    command: Option<&str>,
+) -> Option<MusicSnapshot> {
+    let station_config = Config::Station(
+        StationConfig::default()
+            .with_ssid(SSID)
+            .with_password(PASSWORD.into()),
+    );
+    let mut controller = WifiController::new(
+        wifi,
+        ControllerConfig::default().with_initial_config(station_config),
+    )
+    .ok()?;
+
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let mut resources = StackResources::<3>::new();
+    let (stack, mut runner) = embassy_net::new(
+        Interface::station(),
+        embassy_net::Config::dhcpv4(Default::default()),
+        &mut resources,
+        seed,
+    );
+
+    let outcome = select(runner.run(), async {
+        controller.connect_async().await.ok()?;
+        with_timeout(Duration::from_secs(15), stack.wait_config_up())
+            .await
+            .ok()?;
+        // best-effort: a failed control still lets us refresh the display.
+        if let Some(command) = command {
+            request(stack, "POST", command, 256).await;
+            // give the backend a moment to apply the command before reading
+            // state back, so the now-playing json and the cover reflect the same
+            // (new) track rather than racing the backend's transition.
+            Timer::after(Duration::from_millis(800)).await;
+        }
+        let json = request(stack, "GET", "/api/now-playing", 8192).await?;
+        let cover = request(stack, "GET", "/api/now-playing/cover", MAX_COVER_BYTES).await;
+        Some(MusicSnapshot { json, cover })
+    })
+    .await;
+
+    match outcome {
+        Either::First(_) => None,
+        Either::Second(snapshot) => snapshot,
+    }
+}
+
+// perform one HTTP request on an already-up stack and return the response body
+// for a 2xx status (None otherwise, e.g. a 404 from the cover endpoint when the
+// track has no art). `max_body` caps how much body we buffer.
+async fn request(stack: Stack<'_>, method: &str, path: &str, max_body: usize) -> Option<Vec<u8>> {
     let addr = match SERVER_HOST.parse::<Ipv4Addr>() {
         Ok(ip) => IpAddress::Ipv4(ip),
         Err(_) => *stack
@@ -185,26 +249,23 @@ async fn fetch_body(stack: Stack<'_>, path: &str, body: &mut [u8]) -> Option<usi
         .await
         .ok()?;
 
-    // a minimal HTTP/1.1 GET. Connection: close lets us read until EOF rather
-    // than parse the content length.
     let mut req = String::new();
     write!(
         req,
-        "GET {path} HTTP/1.1\r\nHost: {SERVER_HOST}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {SERVER_HOST}\r\nConnection: close\r\n\r\n"
     )
     .ok()?;
     socket.write_all(req.as_bytes()).await.ok()?;
 
-    // read the whole response into a scratch buffer (headers + body).
     let mut resp = Vec::new();
-    let mut chunk = [0u8; 512];
+    let mut chunk = [0u8; 1024];
     loop {
         match socket.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
                 resp.extend_from_slice(&chunk[..n]);
-                // guard against an unexpectedly large response.
-                if resp.len() > 8192 {
+                // headers + body; stop once we've buffered past the cap.
+                if resp.len() > max_body + 2048 {
                     break;
                 }
             }
@@ -212,12 +273,12 @@ async fn fetch_body(stack: Stack<'_>, path: &str, body: &mut [u8]) -> Option<usi
         }
     }
 
-    // split headers from body at the blank line, then copy the body out.
+    // status line is "HTTP/1.1 NNN ...": the first status digit sits at byte 9.
+    if resp.get(9) != Some(&b'2') {
+        return None;
+    }
     let split = resp.windows(4).position(|w| w == b"\r\n\r\n")?;
-    let payload = &resp[split + 4..];
-    let len = payload.len().min(body.len());
-    body[..len].copy_from_slice(&payload[..len]);
-    Some(len)
+    Some(resp[split + 4..].to_vec())
 }
 
 // set the RTC to UTC from an NTP unix timestamp. the timezone offset is applied

@@ -10,6 +10,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
+use epub_reader::GrayImage;
 use t5s3_epaper_core::Display;
 
 use crate::{
@@ -122,4 +123,53 @@ pub(crate) fn draw_back_button(display: &mut Display) {
 
 pub(crate) fn back_button_hit(sx: i32, sy: i32) -> bool {
     sx < 110 && sy < 50
+}
+
+// scale `image` to fit inside the box at (bx, by) sized bw x bh, preserving
+// aspect ratio and centering it, then blit it with ordered dithering. shared by
+// the reader (page images) and the music page (album art).
+pub(crate) fn draw_image_fit(
+    display: &mut Display,
+    image: &GrayImage,
+    bx: i32,
+    by: i32,
+    bw: u32,
+    bh: u32,
+) {
+    let src_w = u32::from(image.width()).max(1);
+    let src_h = u32::from(image.height()).max(1);
+
+    let (dst_w, dst_h) = if bw * src_h <= bh * src_w {
+        (bw, (bw * src_h / src_w).max(1))
+    } else {
+        ((bh * src_w / src_h).max(1), bh)
+    };
+
+    let off_x = bx + ((bw - dst_w) / 2) as i32;
+    let off_y = by + ((bh - dst_h) / 2) as i32;
+    let area = Rectangle::new(Point::new(off_x, off_y), Size::new(dst_w, dst_h));
+
+    let colors = (0..dst_h).flat_map(move |dy| {
+        (0..dst_w).map(move |dx| {
+            let sx = (dx * src_w / dst_w) as u16;
+            let sy = (dy * src_h / dst_h) as u16;
+            Gray4::new(dither(image.sample(sx, sy), dx, dy))
+        })
+    });
+    display.fill_contiguous(&area, colors).ok();
+}
+
+// 4x4 ordered (Bayer) dithering of an 8-bit luma value to a 0..=15 gray level.
+fn dither(luma: u8, x: u32, y: u32) -> u8 {
+    const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    let scaled = u32::from(luma) * 15;
+    let base = scaled / 255;
+    let frac = scaled % 255;
+    let threshold = BAYER[(y & 3) as usize][(x & 3) as usize];
+    let level = if frac * 16 / 255 > threshold {
+        base + 1
+    } else {
+        base
+    };
+    level.min(15) as u8
 }

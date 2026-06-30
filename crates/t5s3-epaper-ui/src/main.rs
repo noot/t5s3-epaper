@@ -150,7 +150,7 @@ use crate::{
         draw_statusbar_time,
         statusbar_time_rect,
     },
-    wifi::{http_get, set_utc_time, sync_time, RESYNC_INTERVAL_SECS},
+    wifi::{http_get, music_session, set_utc_time, sync_time, RESYNC_INTERVAL_SECS},
 };
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -341,6 +341,22 @@ async fn main(_spawner: Spawner) -> ! {
     // on tap-to-refresh, mirrors `files_dirty`).
     let mut music_view = music::View::Loading;
     let mut music_dirty = false;
+    // a pending transport/volume control to POST on the next music fetch, or None
+    // to just refresh the now-playing state.
+    let mut music_command: Option<music::Button> = None;
+    // whether the pending fetch is an in-page control press (keep the page up and
+    // report ok/error on the bottom status line) rather than a full (re)load.
+    let mut music_inline = false;
+    // the bottom status line on the music page (control feedback), or None.
+    let mut music_status: Option<&'static str> = None;
+    // ticks since the "ok"/"error" status was shown, to auto-dismiss it.
+    let mut music_status_ticks: u16 = 0;
+    // ticks since the music progress line was last repainted.
+    let mut music_refresh: u16 = 0;
+    // anchor for extrapolating the playing track's position locally: (position at
+    // last fetch, track duration, clock micros at that fetch). None unless a
+    // track is actively playing with a known position.
+    let mut music_anchor: Option<(u32, u32, u64)> = None;
     let mut env_view = environment::View::Loading;
     let mut env_dirty = false;
 
@@ -469,7 +485,7 @@ async fn main(_spawner: Spawner) -> ! {
                     }
                 }
                 Screen::Settings => draw_settings_screen(&mut display, &settings),
-                Screen::Music => music::draw_screen(&mut display, &music_view),
+                Screen::Music => music::draw_screen(&mut display, &music_view, music_status),
                 Screen::Environment => environment::draw_screen(&mut display, &env_view),
             }
             display.flush(DrawMode::BlackOnWhite).expect("to flush");
@@ -502,6 +518,40 @@ async fn main(_spawner: Spawner) -> ! {
                 let (voltage, temp, uptime, since_sync) = read_info(&mut display, &mut clock);
                 draw_info_values(&mut display, voltage, temp, uptime, since_sync);
                 display.flush_partial_fast(info_values_rect()).ok();
+            }
+        }
+
+        // advance the music page's song position locally (no wifi): extrapolate
+        // from the last fetch and repaint just the progress line. when the track
+        // should have ended, pull the next one over wifi instead.
+        if current_screen == Screen::Music && !needs_redraw {
+            music_refresh += 1;
+            if music_refresh >= music::REFRESH_TICKS {
+                music_refresh = 0;
+                if let Some((base, duration, at_us)) = music_anchor {
+                    let elapsed = clock.now_us().saturating_sub(at_us) / 1_000_000;
+                    let current = base as u64 + elapsed;
+                    if current >= duration as u64 {
+                        music_command = None;
+                        music_inline = false;
+                        music_anchor = None;
+                        music_dirty = true;
+                    } else {
+                        music::draw_progress(&mut display, current as u32, duration);
+                        display.flush_partial_fast(music::progress_rect()).ok();
+                    }
+                }
+            }
+        }
+
+        // auto-dismiss the control feedback ("ok"/"error") a few seconds after it
+        // is shown, clearing it with its own small partial refresh.
+        if current_screen == Screen::Music && !needs_redraw && music_status.is_some() {
+            music_status_ticks += 1;
+            if music_status_ticks >= music::REFRESH_TICKS {
+                music_status = None;
+                music::draw_status(&mut display, "");
+                display.flush_partial_fast(music::status_rect()).ok();
             }
         }
 
@@ -577,6 +627,10 @@ async fn main(_spawner: Spawner) -> ! {
                                 // then fetch over wifi on the next pass.
                                 Screen::Music => {
                                     music_view = music::View::Loading;
+                                    music_command = None;
+                                    music_inline = false;
+                                    music_status = None;
+                                    music_anchor = None;
                                     music_dirty = true;
                                     needs_redraw = true;
                                 }
@@ -835,9 +889,25 @@ async fn main(_spawner: Spawner) -> ! {
                         if back_button_hit(sx, sy) {
                             current_screen = Screen::Home;
                             needs_redraw = true;
+                        } else if let Some(button) = music::hit(sx, sy) {
+                            // a control press keeps the page up and reports progress
+                            // on the bottom status line, then ok/error when done.
+                            music_command = Some(button);
+                            music_inline = true;
+                            music_anchor = None;
+                            music_status = Some("contacting server...");
+                            music_status_ticks = 0;
+                            music::draw_status(&mut display, "contacting server...");
+                            display.flush_partial_fast(music::status_rect()).ok();
+                            // no needs_redraw: keep the page, fetch on this pass.
+                            music_dirty = true;
                         } else {
-                            // a tap anywhere else re-fetches the now-playing data.
+                            // a tap elsewhere refreshes the whole page.
+                            music_command = None;
+                            music_inline = false;
+                            music_status = None;
                             music_view = music::View::Loading;
+                            music_anchor = None;
                             music_dirty = true;
                             needs_redraw = true;
                         }
@@ -913,22 +983,58 @@ async fn main(_spawner: Spawner) -> ! {
         // returns.)
         if current_screen == Screen::Music && music_dirty && !needs_redraw {
             music_dirty = false;
+            let command = music_command.take();
+            let inline = music_inline;
+            music_inline = false;
             let wifi = unsafe { esp_hal::peripherals::WIFI::steal() };
-            let mut buf = [0u8; 1024];
-            music_view = match http_get(wifi, music::PATH, &mut buf).await {
-                Some(n) => music::parse(&buf[..n]),
-                None => music::View::Error,
-            };
-            needs_redraw = true;
+            let snapshot = music_session(wifi, command.map(music::Button::command)).await;
+            match snapshot {
+                Some(snap) => {
+                    music_view = music::build_view(&snap.json, snap.cover.as_deref());
+                    // anchor the local position tick to this fetch.
+                    music_anchor = music::playback(&music_view)
+                        .map(|p| (p.base_secs, p.duration_secs, clock.now_us()));
+                    music_refresh = 0;
+                    music_status_ticks = 0;
+                    if !inline || command.is_some_and(music::Button::changes_art) {
+                        // a (re)load, or a track change (next/previous), redraws
+                        // fully so the album art re-renders. draw_screen shows the
+                        // "ok" status on the repainted page when inline.
+                        music_status = if inline { Some("ok") } else { None };
+                        needs_redraw = true;
+                    } else if command.is_some_and(music::Button::changes_display) {
+                        // play/pause: repaint just the band below the art.
+                        music_status = Some("ok");
+                        music::redraw_body(&mut display, &music_view, Some("ok"));
+                        display.flush_partial_fast(music::below_art_rect()).ok();
+                    } else {
+                        // volume: only the status line needs updating.
+                        music_status = Some("ok");
+                        music::draw_status(&mut display, "ok");
+                        display.flush_partial_fast(music::status_rect()).ok();
+                    }
+                }
+                None if inline => {
+                    // leave the page as-is; just report the failure.
+                    music_status = Some("error");
+                    music_status_ticks = 0;
+                    music::draw_status(&mut display, "error");
+                    display.flush_partial_fast(music::status_rect()).ok();
+                }
+                None => {
+                    music_status = None;
+                    music_view = music::View::Error;
+                    needs_redraw = true;
+                }
+            }
         }
 
         if current_screen == Screen::Environment && env_dirty && !needs_redraw {
             env_dirty = false;
             let path = environment::path();
             let wifi = unsafe { esp_hal::peripherals::WIFI::steal() };
-            let mut buf = [0u8; 512];
-            env_view = match http_get(wifi, path.as_str(), &mut buf).await {
-                Some(n) => environment::parse(&buf[..n]),
+            env_view = match http_get(wifi, path.as_str()).await {
+                Some(body) => environment::parse(&body),
                 None => environment::View::Error,
             };
             needs_redraw = true;

@@ -7,17 +7,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
-use epub_reader::{
-    decode_image,
-    parse_markdown,
-    parse_txt,
-    Block,
-    Document,
-    Epub,
-    GrayImage,
-    Span,
-    Style,
-};
+use epub_reader::{decode_image, parse_markdown, parse_txt, Block, Document, Epub, Span, Style};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use t5s3_epaper_core::{
     sdcard::{Error, PinConfig},
@@ -477,7 +467,11 @@ fn render_image(display: &mut Display, source: &Source, href: &str) {
         Source::Memory(_) => None,
     };
     match decoded {
-        Some(image) => draw_image(display, &image),
+        Some(image) => {
+            let box_w = (SCREEN_W - 2 * MARGIN_X) as u32;
+            let box_h = (CONTENT_BOTTOM - CONTENT_TOP) as u32;
+            crate::widgets::draw_image_fit(display, &image, MARGIN_X, CONTENT_TOP, box_w, box_h);
+        }
         None => {
             Text::with_alignment(
                 "[image unavailable]",
@@ -489,49 +483,6 @@ fn render_image(display: &mut Display, source: &Source, href: &str) {
             .ok();
         }
     }
-}
-
-// scale an image to fit the content box (preserving aspect), nearest-neighbour
-// sampled and ordered-dithered to the panel's 16 gray levels, centered.
-fn draw_image(display: &mut Display, image: &GrayImage) {
-    let box_w = (SCREEN_W - 2 * MARGIN_X) as u32;
-    let box_h = (CONTENT_BOTTOM - CONTENT_TOP) as u32;
-    let src_w = u32::from(image.width()).max(1);
-    let src_h = u32::from(image.height()).max(1);
-
-    let (dst_w, dst_h) = if box_w * src_h <= box_h * src_w {
-        (box_w, (box_w * src_h / src_w).max(1))
-    } else {
-        ((box_h * src_w / src_h).max(1), box_h)
-    };
-
-    let off_x = MARGIN_X + ((box_w - dst_w) / 2) as i32;
-    let off_y = CONTENT_TOP + ((box_h - dst_h) / 2) as i32;
-    let area = Rectangle::new(Point::new(off_x, off_y), Size::new(dst_w, dst_h));
-
-    let colors = (0..dst_h).flat_map(move |dy| {
-        (0..dst_w).map(move |dx| {
-            let sx = (dx * src_w / dst_w) as u16;
-            let sy = (dy * src_h / dst_h) as u16;
-            Gray4::new(dither(image.sample(sx, sy), dx, dy))
-        })
-    });
-    display.fill_contiguous(&area, colors).ok();
-}
-
-// 4x4 ordered (Bayer) dithering of an 8-bit luma value to a 0..=15 gray level.
-fn dither(luma: u8, x: u32, y: u32) -> u8 {
-    const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-    let scaled = u32::from(luma) * 15;
-    let base = scaled / 255;
-    let frac = scaled % 255;
-    let threshold = BAYER[(y & 3) as usize][(x & 3) as usize];
-    let level = if frac * 16 / 255 > threshold {
-        base + 1
-    } else {
-        base
-    };
-    level.min(15) as u8
 }
 
 // lay out a single chapter's blocks into display lines. parsing the chapter
