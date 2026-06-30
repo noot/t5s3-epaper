@@ -1,7 +1,7 @@
 use embedded_hal::spi::SpiBus as _;
 use esp_hal::{
     delay::Delay,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig},
+    gpio::{Input, InputConfig, Level, Output, OutputConfig, RtcPin},
     peripherals,
     spi::{
         master::{Config as SpiConfig, ConfigError as SpiConfigError, Spi},
@@ -182,8 +182,8 @@ pub struct PinConfig<'d> {
 ///
 /// Talks to the radio over the shared board SPI bus with a dedicated chip
 /// select. The GPS/LoRa 3.3 V power rail (PCA9555 IO0_0) is enabled by
-/// `Display::new()`, so the radio is powered as long as the display has been
-/// initialised.
+/// `Display::new()`, so the radio is powered for the rest of this power cycle,
+/// until `Display::deep_sleep()` cuts the rail.
 pub struct Lora<'d> {
     spi: Spi<'d, Blocking>,
     cs: Output<'d>,
@@ -217,6 +217,11 @@ impl<'d> Lora<'d> {
         .with_sck(pins.sclk)
         .with_mosi(pins.mosi)
         .with_miso(pins.miso);
+
+        // deep sleep holds RST low to stop the unpowered SX1262 being
+        // back-powered through its reset pull-up; release that hold before
+        // driving the line again.
+        pins.rst.rtcio_pad_hold(false);
 
         let mut radio = Self {
             spi,

@@ -68,12 +68,17 @@ const GT911_MODULE_SWITCH_1: u16 = 0x804D;
 const GT911_CONFIG_CHKSUM: u16 = 0x80FF;
 const GT911_CONFIG_FRESH: u16 = 0x8100;
 const GT911_CONFIG_LENGTH: usize = 186;
+const GT911_COMMAND: u16 = 0x8040;
+const GT911_CMD_SLEEP: u8 = 0x05;
 const GT911_POINT_INFO: u16 = 0x814E;
 const GT911_POINT_1: u16 = 0x814F;
 const GT911_X_RESOLUTION: u16 = 0x8146;
 const GT911_Y_RESOLUTION: u16 = 0x8148;
 const GT911_DEV_ID: u32 = 911;
 const VCOM_MV: u16 = 1600;
+// port 0 bit 0 gates the GPS/LoRa 3.3 V rail (active high); matches the factory
+// firmware's `io_extend_lora_gps_power_on`.
+const PCA_BIT_LORA_GPS_PWR: u8 = 1 << 0;
 const PCA_BIT_OE: u8 = 1 << 0;
 const PCA_BIT_MODE: u8 = 1 << 1;
 const PCA_BIT_BUTTON: u8 = 1 << 2;
@@ -101,6 +106,7 @@ struct ConfigWriter<'a> {
     touch_initialized: bool,
     touch_addr: u8,
     touch_resolution: (u16, u16),
+    output_port0: u8,
     output_port1: u8,
     config: ConfigRegister,
 }
@@ -141,6 +147,7 @@ impl<'a> ConfigWriter<'a> {
             touch_initialized: false,
             touch_addr: GT911_ADDR_LOW,
             touch_resolution: (0, 0),
+            output_port0: 0xFF,
             output_port1: 0,
             config: ConfigRegister::default(),
         };
@@ -155,7 +162,10 @@ impl<'a> ConfigWriter<'a> {
         writer.write_register(PCA9555_ADDR, &[PCA9555_REG_INVERT_PORT0, 0x00])?;
         writer.write_register(PCA9555_ADDR, &[PCA9555_REG_INVERT_PORT1, 0x00])?;
         writer.write_register(PCA9555_ADDR, &[PCA9555_REG_CONFIG_PORT0, 0x00])?;
-        writer.write_register(PCA9555_ADDR, &[PCA9555_REG_OUTPUT_PORT0, 0xFF])?;
+        writer.write_register(
+            PCA9555_ADDR,
+            &[PCA9555_REG_OUTPUT_PORT0, writer.output_port0],
+        )?;
         writer.write()?;
 
         Ok(writer)
@@ -180,6 +190,43 @@ impl<'a> ConfigWriter<'a> {
         }
         self.output_port1 = value;
         self.write_register(PCA9555_ADDR, &[PCA9555_REG_OUTPUT_PORT1, value])
+    }
+
+    fn set_lora_gps_power(&mut self, on: bool) -> crate::Result<()> {
+        if on {
+            self.output_port0 |= PCA_BIT_LORA_GPS_PWR;
+        } else {
+            self.output_port0 &= !PCA_BIT_LORA_GPS_PWR;
+        }
+        self.write_register(PCA9555_ADDR, &[PCA9555_REG_OUTPUT_PORT0, self.output_port0])
+    }
+
+    fn sleep_touch(&mut self) -> crate::Result<()> {
+        if !self.touch_initialized {
+            return Ok(());
+        }
+        // GT911 sits on the always-on 3.3 V rail and keeps scanning (~3-4 mA)
+        // until told to sleep. It only latches the 0x05 sleep command with INT
+        // held low, so assert INT first.
+        self.touch_int.set_low();
+        self.touch_int.set_output_enable(true);
+        self.touch_int.set_input_enable(false);
+        busy_delay(30_000);
+        let cmd = self.write_register16(self.touch_addr, GT911_COMMAND, &[GT911_CMD_SLEEP]);
+
+        // The command alone is not enough: once the pin is released the INT
+        // pull-up floats high, which is the GT911 wake trigger, so it resumes
+        // scanning. Hold RST low instead, keeping the chip in reset for the
+        // whole deep sleep. `touch_reset_for_address` resets it on the next boot.
+        self.touch_rst.set_low();
+        busy_delay(30_000);
+        // SAFETY: GPIO9 is owned by `self.touch_rst`, which is driving it low
+        // right now. `rtcio_pad_hold` only sets the LP_AON hold latch and does
+        // not touch the output registers the live `Output` drives. The latch
+        // freezes the pad low across deep sleep and is cleared by the matching
+        // `rtcio_pad_hold(false)` in `new`.
+        unsafe { peripherals::GPIO9::steal() }.rtcio_pad_hold(true);
+        cmd
     }
 
     fn set_stv(&mut self, level: bool) {
@@ -640,6 +687,14 @@ impl<'a> ED047TC1<'a> {
 
     pub(crate) fn shutdown(&mut self) -> crate::Result<()> {
         self.cfg_writer.shutdown()
+    }
+
+    pub(crate) fn lora_gps_power_off(&mut self) -> crate::Result<()> {
+        self.cfg_writer.set_lora_gps_power(false)
+    }
+
+    pub(crate) fn sleep_touch(&mut self) -> crate::Result<()> {
+        self.cfg_writer.sleep_touch()
     }
 
     pub(crate) fn input_state(&mut self) -> crate::Result<InputState> {
