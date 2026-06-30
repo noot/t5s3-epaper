@@ -1,14 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/t5s3-epaper-core", "crates/t5s3-epaper-ui"]
+members = ["crates/t5s3-epaper-core", "crates/t5s3-epaper-ui", "crates/t3s3-epaper"]
 exclude = ["tools/wallpaper", "crates/epub-reader"]
 
 [workspace.package]
 version = "1.1.0"
 edition = "2021"
 license = "GPL-3.0"
-authors = ["Andrew Whaley <andrew@whaley.org.uk", "Frido Koch <info@fridokoch.de>"]
-repository = "https://github.com/azw413/lilygo-t5s3paperpro-rs"
+repository = "https://github.com/noot/t5s3-epaper"
 
 [workspace.dependencies]
 critical-section = "1.2.0"
@@ -54,3 +53,15 @@ incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
+
+# esp-hal strongly recommends building dependencies with optimizations even in dev.
+[profile.dev.package.esp-hal]
+opt-level = 3
+
+# esp-radio's docs require opt-level 2 or 3, otherwise the wifi driver misbehaves;
+# the esp-rtos scheduler is timing-sensitive too.
+[profile.dev.package.esp-radio]
+opt-level = 3
+
+[profile.dev.package.esp-rtos]
+opt-level = 3
