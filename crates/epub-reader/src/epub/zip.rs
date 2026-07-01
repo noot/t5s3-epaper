@@ -8,6 +8,10 @@ const LOCAL_SIG: u32 = 0x0403_4b50;
 const EOCD_MIN: usize = 22;
 const METHOD_STORED: u16 = 0;
 const METHOD_DEFLATE: u16 = 8;
+// cap inflate output so a malicious archive can't expand a tiny deflate stream
+// into gigabytes and exhaust the device's memory. comfortably above any real
+// epub entry (chapter xhtml or embedded image).
+const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
 
 struct Entry {
     name: String,
@@ -88,11 +92,13 @@ impl<'a> Archive<'a> {
 
         match entry.method {
             METHOD_STORED => Ok(compressed.to_vec()),
-            METHOD_DEFLATE => {
-                miniz_oxide::inflate::decompress_to_vec(compressed).map_err(|_| Error::Inflate {
-                    entry: String::from(name),
-                })
-            }
+            METHOD_DEFLATE => miniz_oxide::inflate::decompress_to_vec_with_limit(
+                compressed,
+                MAX_DECOMPRESSED_SIZE,
+            )
+            .map_err(|_| Error::Inflate {
+                entry: String::from(name),
+            }),
             _ => Err(Error::Zip("unsupported compression method")),
         }
     }

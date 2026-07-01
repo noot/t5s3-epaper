@@ -294,10 +294,12 @@ pub(crate) fn draw_list(display: &mut Display, y: i32, header: &str, items: &[St
     let font = MonoTextStyle::new(&FONT_6X10, Gray4::BLACK);
     let mut ey = y + 40;
     for msg in items.iter().rev() {
-        let line = if msg.len() > 66 {
-            format!("> {}...", &msg[..66])
-        } else {
-            format!("> {msg}")
+        // truncate on a char boundary, not a byte index: received messages are
+        // arbitrary utf-8 from a peer, so slicing at a fixed byte would panic
+        // mid-codepoint.
+        let line = match msg.char_indices().nth(66) {
+            Some((end, _)) => format!("> {}...", &msg[..end]),
+            None => format!("> {msg}"),
         };
         Text::new(&line, Point::new(MSG_X + 10, ey), font)
             .draw(display)

@@ -821,11 +821,14 @@ fn parse_gt911_chip_id(product_id: [u8; 4]) -> u32 {
 
 #[inline(always)]
 fn busy_delay(wait_cycles: u32) {
-    let target = cycles() + wait_cycles as u64;
-    while cycles() < target {}
+    // compare elapsed cycles with wrapping subtraction: the 32-bit cycle
+    // counter wraps roughly every ~18s at 240MHz, so a plain `start + wait`
+    // target can sit above any value the counter reaches and spin forever.
+    let start = cycles();
+    while cycles().wrapping_sub(start) < wait_cycles {}
 }
 
 #[inline(always)]
-fn cycles() -> u64 {
-    esp_hal::xtensa_lx::timer::get_cycle_count() as u64
+fn cycles() -> u32 {
+    esp_hal::xtensa_lx::timer::get_cycle_count()
 }
