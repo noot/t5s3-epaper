@@ -149,8 +149,8 @@ impl<'d> SdCard<'d> {
         })
     }
 
-    pub fn card_size_bytes(&self) -> Result<u64> {
-        Ok(self.card_size_bytes)
+    pub fn card_size_bytes(&self) -> u64 {
+        self.card_size_bytes
     }
 
     /// Return whether a file or directory exists at `path`.

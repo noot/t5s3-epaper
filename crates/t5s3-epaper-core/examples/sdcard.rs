@@ -44,7 +44,7 @@ fn main() -> ! {
 
     let sdcard = SdCard::new(sdcard_pin_config!(peripherals), peripherals.SPI2)
         .expect("to initialize sd card");
-    let card_size = sdcard.card_size_bytes().expect("to query card size");
+    let card_size = sdcard.card_size_bytes();
 
     sdcard
         .create_dir_all(NESTED_DIR)

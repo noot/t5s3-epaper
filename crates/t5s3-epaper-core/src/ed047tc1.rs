@@ -762,24 +762,50 @@ impl<'a> ED047TC1<'a> {
     pub(crate) fn output_row(&mut self, output_time: u16) -> crate::Result<()> {
         self.latch_row();
 
-        let data = pulse!(output_time, 50);
-        let rmt_tx = self.rmt.pulse(&data, false)?;
+        // take the display resources before starting the row pulse so a missing
+        // handle can't strand the rmt channel the pulse claims below.
         let i8080 = self.i8080.take().ok_or(crate::Error::MissingI8080)?;
-        let dma_buf = self.dma_buf.take().ok_or(crate::Error::MissingDmaBuffer)?;
-        let tx = i8080
-            .send(Command::<u8>::One(0), 0, dma_buf)
-            .map_err(|(err, i8080, buf)| {
-                self.dma_buf = Some(buf);
+        let dma_buf = match self.dma_buf.take() {
+            Some(dma_buf) => dma_buf,
+            None => {
                 self.i8080 = Some(i8080);
-                crate::Error::Dma(err)
-            })?;
+                return Err(crate::Error::MissingDmaBuffer);
+            }
+        };
+
+        let data = pulse!(output_time, 50);
+        let rmt_tx = match self.rmt.pulse(&data, false) {
+            Ok(rmt_tx) => rmt_tx,
+            Err(e) => {
+                self.i8080 = Some(i8080);
+                self.dma_buf = Some(dma_buf);
+                return Err(e);
+            }
+        };
+
+        let tx = match i8080.send(Command::<u8>::One(0), 0, dma_buf) {
+            Ok(tx) => tx,
+            Err((err, i8080, buf)) => {
+                self.i8080 = Some(i8080);
+                self.dma_buf = Some(buf);
+                // reclaim the channel the row pulse already claimed (best effort;
+                // we are already returning the send error).
+                if let Some(rmt_tx) = rmt_tx {
+                    self.rmt.reclaim_channel(rmt_tx).ok();
+                }
+                return Err(crate::Error::Dma(err));
+            }
+        };
+
         let (r, i8080, dma_buf) = tx.wait();
+        // restore the display resources before the fallible reclaim / result
+        // checks so an error there can't strand them either.
+        self.i8080 = Some(i8080);
+        self.dma_buf = Some(dma_buf);
         if let Some(rmt_tx) = rmt_tx {
             self.rmt.reclaim_channel(rmt_tx)?;
         }
         r.map_err(crate::Error::Dma)?;
-        self.i8080 = Some(i8080);
-        self.dma_buf = Some(dma_buf);
 
         Ok(())
     }

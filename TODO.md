@@ -17,7 +17,6 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [ ] **BQ25896 full driver** — charge current config, charge status, input power path management (currently shutdown only)
 - [ ] **BQ27220 full driver** — current draw, temperature, state of health, remaining/full capacity (currently voltage + SOC only)
 - [x] LoRa user message (with keyboard) and broadcast
-- [ ] use power button to enter deep sleep / wake from deep sleep
 
 ### low priority / nice to have
 
@@ -53,9 +52,9 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [x] user settings persisted
 - [x] customizable fonts/font size
 - [x] customizable timezone
-- [ ] pull now playing from music server (see waveshare-epaper repo)
+- [x] pull now playing from music server (see waveshare-epaper repo)
 - [ ] pull weather data and display on ui page
-- [ ] pull home environment data (temp, humidity, co2)
+- [x] pull home environment data (temp, humidity, co2)
 
 # bug fixes
 
