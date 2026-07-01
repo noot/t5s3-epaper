@@ -315,6 +315,9 @@ async fn main(_spawner: Spawner) -> ! {
     // set when Power Off is tapped on the sleep screen, to branch the teardown
     // below into a full PMIC shutdown instead of deep sleep.
     let mut power_off = false;
+    // set when a settings value changes; the blob is written to flash once on
+    // leaving the settings screen rather than on every tap, to spare flash wear.
+    let mut settings_dirty = false;
     let mut last_status_minute: u32 = 60;
     // time of the last clock sync, used to schedule periodic re-syncs.
     let mut last_resync_secs = clock.now_us() / 1_000_000;
@@ -505,7 +508,11 @@ async fn main(_spawner: Spawner) -> ! {
                 Screen::Music => music::draw_screen(&mut display, &music_view, music_status),
                 Screen::Environment => environment::draw_screen(&mut display, &env_view),
             }
-            display.flush(DrawMode::BlackOnWhite).expect("to flush");
+            // a transient flush error shouldn't reboot the ui mid-session; log
+            // it and carry on (the next redraw will try again).
+            if let Err(e) = display.flush(DrawMode::BlackOnWhite) {
+                esp_println::println!("display flush failed: {e}");
+            }
             needs_redraw = false;
             last_status_minute = now.map_or(60, |(_, m)| m);
             info_refresh = 0;
@@ -587,8 +594,16 @@ async fn main(_spawner: Spawner) -> ! {
         }
 
         // poll touch/buttons every pass so input stays responsive. the GPS
-        // work below is non-blocking, so it never stalls this poll.
-        let input = display.input().expect("to read input");
+        // work below is non-blocking, so it never stalls this poll. a transient
+        // read error shouldn't reboot the ui, so log it and retry next pass.
+        let input = match display.input() {
+            Ok(input) => input,
+            Err(e) => {
+                esp_println::println!("input read failed: {e}");
+                delay.delay_millis(50);
+                continue;
+            }
+        };
 
         if input.buttons.home && current_screen != Screen::Home {
             if current_screen == Screen::Reader {
@@ -851,7 +866,7 @@ async fn main(_spawner: Spawner) -> ! {
                         }
                         Some(SettingsHit::TzMinus) => {
                             settings.tz_offset_hours = (settings.tz_offset_hours - 1).max(-12);
-                            settings.save();
+                            settings_dirty = true;
                             redraw_tz(&mut display, settings.tz_offset_hours);
                             display.flush_partial_fast(tz_value_rect()).ok();
                             last_status_minute =
@@ -859,7 +874,7 @@ async fn main(_spawner: Spawner) -> ! {
                         }
                         Some(SettingsHit::TzPlus) => {
                             settings.tz_offset_hours = (settings.tz_offset_hours + 1).min(14);
-                            settings.save();
+                            settings_dirty = true;
                             redraw_tz(&mut display, settings.tz_offset_hours);
                             display.flush_partial_fast(tz_value_rect()).ok();
                             last_status_minute =
@@ -867,7 +882,7 @@ async fn main(_spawner: Spawner) -> ! {
                         }
                         Some(SettingsHit::ToggleFormat) => {
                             settings.time_24h = !settings.time_24h;
-                            settings.save();
+                            settings_dirty = true;
                             redraw_format(&mut display, settings.time_24h);
                             display.flush_partial_fast(format_button_rect()).ok();
                             last_status_minute =
@@ -875,31 +890,31 @@ async fn main(_spawner: Spawner) -> ! {
                         }
                         Some(SettingsHit::CycleIcons) => {
                             settings.icon_style = settings.icon_style.next();
-                            settings.save();
+                            settings_dirty = true;
                             redraw_icons(&mut display, &settings);
                             display.flush_partial_fast(icons_button_rect()).ok();
                         }
                         Some(SettingsHit::CycleIconSize) => {
                             settings.icon_size = settings.icon_size.next();
-                            settings.save();
+                            settings_dirty = true;
                             redraw_icon_size(&mut display, &settings);
                             display.flush_partial_fast(icon_size_button_rect()).ok();
                         }
                         Some(SettingsHit::CycleFontSize) => {
                             settings.reader_font_size = settings.reader_font_size.next();
-                            settings.save();
+                            settings_dirty = true;
                             redraw_font_size(&mut display, &settings);
                             display.flush_partial_fast(font_size_button_rect()).ok();
                         }
                         Some(SettingsHit::CycleFontFamily) => {
                             settings.reader_font_family = settings.reader_font_family.next();
-                            settings.save();
+                            settings_dirty = true;
                             redraw_family(&mut display, &settings);
                             display.flush_partial_fast(family_button_rect()).ok();
                         }
                         Some(SettingsHit::CycleSpacing) => {
                             settings.reader_line_spacing = settings.reader_line_spacing.next();
-                            settings.save();
+                            settings_dirty = true;
                             redraw_spacing(&mut display, &settings);
                             display.flush_partial_fast(spacing_button_rect()).ok();
                         }
@@ -953,6 +968,13 @@ async fn main(_spawner: Spawner) -> ! {
             }
             Some(_) => {}
             None => touch_active = false,
+        }
+
+        // persist any settings change once, after leaving the settings screen,
+        // instead of writing flash on every tap (flash wear).
+        if settings_dirty && current_screen != Screen::Settings {
+            settings.save();
+            settings_dirty = false;
         }
 
         // (re)load the directory listing when the browser is opened or navigates
