@@ -10,7 +10,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_core::pixelcolor::{Gray4, GrayColor};
-use epub_reader::{decode_image, Epub, GrayImage};
+use epub_reader::{chapter_number, decode_image, Epub, GrayImage};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use t5s3_epaper_core::{
     sdcard::{Error, PinConfig},
@@ -20,7 +20,7 @@ use t5s3_epaper_core::{
 
 use crate::{
     layout::SCREEN_W,
-    pages::reader::{content_key, read_progress},
+    pages::reader::{content_key, read_progress, Progress},
     widgets::{draw_back_button, draw_image_fit},
 };
 
@@ -63,7 +63,15 @@ pub(crate) struct Book {
     title: String,
     author: String,
     chapter_count: usize,
+    // spine indices that begin a real chapter per the TOC (see the epub-reader
+    // crate); empty when the book has no usable TOC.
+    nav_starts: Vec<usize>,
+    // current reading position from the bookmark: chapter (spine index), the page
+    // within it, and that section's page count (0 if unknown), used together for
+    // a page-refined overall-progress bar.
     chapter: usize,
+    page: usize,
+    page_count: usize,
     started: bool,
     cover: Option<GrayImage>,
 }
@@ -156,45 +164,81 @@ fn scan(card: &SdCard, out: &mut Vec<(String, u32)>) {
 // the cache. `None` only if the file can't be read at all.
 fn resolve_book(card: &SdCard, path: &str, size: u32) -> Option<Book> {
     let ck = cache_key(path, size);
-    let (key, title, author, chapter_count, cover) = match read_cache(card, ck) {
+    let meta = match read_cache(card, ck) {
         Some(meta) => meta,
         None => build_cache(card, ck, path)?,
     };
 
-    let (chapter, page) = read_progress(card, key);
+    let Progress {
+        chapter,
+        page,
+        page_count,
+    } = read_progress(card, meta.key);
     Some(Book {
         path: String::from(path),
-        title,
-        author,
-        chapter_count,
+        title: meta.title,
+        author: meta.author,
+        chapter_count: meta.chapter_count,
+        nav_starts: meta.nav_starts,
         chapter,
+        page,
+        page_count,
         started: chapter > 0 || page > 0,
-        cover,
+        cover: meta.cover,
     })
 }
 
-type CacheEntry = (u32, String, String, usize, Option<GrayImage>);
+// tag on the metadata file's first line; bumped whenever the format changes so
+// stale caches are treated as a miss and rebuilt.
+const CACHE_VERSION: &str = "v2";
+
+// a book's cached metadata: the content-hash key (for its bookmark), display
+// fields, real-chapter starts, and decoded cover thumbnail.
+struct CachedMeta {
+    key: u32,
+    title: String,
+    author: String,
+    chapter_count: usize,
+    nav_starts: Vec<usize>,
+    cover: Option<GrayImage>,
+}
 
 // read a cached metadata (`.LIB`) + thumbnail (`.THM`) pair for `ck`. both must
-// be present and parseable, otherwise the caller rebuilds.
-fn read_cache(card: &SdCard, ck: u32) -> Option<CacheEntry> {
+// be present, current-version, and parseable, otherwise the caller rebuilds.
+fn read_cache(card: &SdCard, ck: u32) -> Option<CachedMeta> {
     let meta = card.read_file(&meta_path(ck)).ok()?;
     let text = core::str::from_utf8(&meta).ok()?;
     let mut lines = text.split('\n');
     let mut header = lines.next()?.split_whitespace();
+    if header.next()? != CACHE_VERSION {
+        return None;
+    }
     let key = u32::from_str_radix(header.next()?, 16).ok()?;
     let chapter_count = header.next()?.parse().ok()?;
     let title = String::from(lines.next().unwrap_or(""));
     let author = String::from(lines.next().unwrap_or(""));
+    let nav_starts = lines
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
 
     let thumb = card.read_file(&thumb_path(ck)).ok()?;
     let cover = decode_thumb(&thumb);
-    Some((key, title, author, chapter_count, cover))
+    Some(CachedMeta {
+        key,
+        title,
+        author,
+        chapter_count,
+        nav_starts,
+        cover,
+    })
 }
 
 // parse the epub once to extract its metadata + cover, cache both, and return
-// the same tuple `read_cache` would.
-fn build_cache(card: &SdCard, ck: u32, path: &str) -> Option<CacheEntry> {
+// the same `CachedMeta` `read_cache` would.
+fn build_cache(card: &SdCard, ck: u32, path: &str) -> Option<CachedMeta> {
     let bytes = match card.read_file(path) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -213,6 +257,7 @@ fn build_cache(card: &SdCard, ck: u32, path: &str) -> Option<CacheEntry> {
     let title = String::from(epub.meta().title().unwrap_or("Untitled"));
     let author = String::from(epub.meta().author().unwrap_or(""));
     let chapter_count = epub.chapter_count().max(1);
+    let nav_starts = epub.nav_starts().to_vec();
 
     let cover = epub
         .cover()
@@ -220,7 +265,12 @@ fn build_cache(card: &SdCard, ck: u32, path: &str) -> Option<CacheEntry> {
         .and_then(|raw| decode_image(&raw).ok())
         .and_then(|image| downscale(&image, THUMB_W, THUMB_H));
 
-    let meta = format!("{key:08X} {chapter_count}\n{title}\n{author}\n");
+    let nav = nav_starts
+        .iter()
+        .map(|start| format!("{start}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let meta = format!("{CACHE_VERSION} {key:08X} {chapter_count}\n{title}\n{author}\n{nav}\n");
     if let Err(e) = card.write_file(&meta_path(ck), meta.as_bytes()) {
         esp_println::println!("library: cache meta {path} failed: {e:?}");
     }
@@ -228,7 +278,14 @@ fn build_cache(card: &SdCard, ck: u32, path: &str) -> Option<CacheEntry> {
         esp_println::println!("library: cache thumb {path} failed: {e:?}");
     }
 
-    Some((key, title, author, chapter_count, cover))
+    Some(CachedMeta {
+        key,
+        title,
+        author,
+        chapter_count,
+        nav_starts,
+        cover,
+    })
 }
 
 // nearest-neighbour downscale of a decoded cover to fit within (max_w, max_h),
@@ -365,44 +422,64 @@ fn draw_card(display: &mut Display, book: &Book, card_y: i32) {
     draw_progress(display, book, card_y);
 }
 
-// a labelled progress bar for multi-chapter books; a plain status for
-// single-chapter ones whose chapter index can't express progress.
+// a labelled progress bar. the label is the chapter (numbered against the TOC
+// when available, front matter shown as such; a percentage for TOC-less
+// size-split books). the bar tracks overall reading progress through the whole
+// book, refined by the page within the current section. unopened books show a
+// plain "Not started" with no bar.
 fn draw_progress(display: &mut Display, book: &Book, card_y: i32) {
     let label_style = MonoTextStyle::new(&FONT_9X15, Gray4::new(4));
     let bar_y = card_y + CARD_H - 40;
     let bar_w = (CARD_X + CARD_W - TEXT_X - 8) as u32;
 
-    if book.chapter_count > 1 {
-        let label = format!("Chapter {} of {}", book.chapter + 1, book.chapter_count);
-        Text::new(&label, Point::new(TEXT_X, bar_y - 12), label_style)
+    if !book.started {
+        Text::new("Not started", Point::new(TEXT_X, bar_y), label_style)
             .draw(display)
             .ok();
-        Rectangle::new(Point::new(TEXT_X, bar_y), Size::new(bar_w, 14))
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .stroke_color(Gray4::new(6))
-                    .stroke_width(1)
-                    .build(),
-            )
-            .draw(display)
-            .ok();
-        let fill = bar_w * book.chapter as u32 / book.chapter_count as u32;
-        if fill > 0 {
-            Rectangle::new(Point::new(TEXT_X, bar_y), Size::new(fill, 14))
-                .into_styled(PrimitiveStyle::with_fill(Gray4::new(4)))
-                .draw(display)
-                .ok();
-        }
-    } else {
-        let status = if book.started {
-            "In progress"
-        } else {
-            "Not started"
-        };
-        Text::new(status, Point::new(TEXT_X, bar_y), label_style)
+        return;
+    }
+
+    let permille = overall_permille(book);
+    let label = match chapter_number(&book.nav_starts, book.chapter) {
+        Some((0, _)) => String::from("Front matter"),
+        Some((chapter, total)) => format!("Chapter {chapter} of {total}"),
+        None => format!("{}% read", permille / 10),
+    };
+
+    Text::new(&label, Point::new(TEXT_X, bar_y - 12), label_style)
+        .draw(display)
+        .ok();
+    Rectangle::new(Point::new(TEXT_X, bar_y), Size::new(bar_w, 14))
+        .into_styled(
+            PrimitiveStyleBuilder::new()
+                .stroke_color(Gray4::new(6))
+                .stroke_width(1)
+                .build(),
+        )
+        .draw(display)
+        .ok();
+    let fill = bar_w * permille / 1000;
+    if fill > 0 {
+        Rectangle::new(Point::new(TEXT_X, bar_y), Size::new(fill, 14))
+            .into_styled(PrimitiveStyle::with_fill(Gray4::new(4)))
             .draw(display)
             .ok();
     }
+}
+
+// overall reading progress through the whole book in per-mille (0..=1000): the
+// current section's position among all spine items, refined by the page within
+// it. treats each spine item as equal weight (page counts vary per section, and
+// pre-computing exact byte weights isn't worth the cost); older bookmarks with
+// no page count fall back to whole-section granularity.
+fn overall_permille(book: &Book) -> u32 {
+    let sections = book.chapter_count.max(1) as u32;
+    let within = if book.page_count > 0 {
+        (book.page as u32 * 1000 / book.page_count as u32).min(1000)
+    } else {
+        0
+    };
+    ((book.chapter as u32 * 1000 + within) / sections).min(1000)
 }
 
 fn draw_cover(display: &mut Display, cover: Option<&GrayImage>, cover_y: i32) {

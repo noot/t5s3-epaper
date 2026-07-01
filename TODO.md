@@ -43,7 +43,7 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 ## reader
 - [x] map auxiliary button to "next page" when in reader
 - [x] make dedicated reader page that shows currently reading, progress, covers, etc
-- [ ] update chapter numbers to match actual book chapters
+- [x] update chapter numbers to match actual book chapters
 - [ ] support more scripts — Greek, CJK, Hebrew, etc. currently render as `?` (need additional u8g2 fonts added to `pick_font` fallback chain)
 - [ ] stream epub chapters from SD instead of holding the whole compressed file in PSRAM (for large/image-heavy books)
 
@@ -53,9 +53,9 @@ hardware reference: [T5S3-4.7-e-paper-PRO](https://github.com/Xinyuan-LilyGO/T5S
 - [x] user settings persisted
 - [x] customizable fonts/font size
 - [x] customizable timezone
-- [ ] pull now playing from music server (see waveshare-epaper repo)
+- [x] pull now playing from music server (see waveshare-epaper repo)
 - [ ] pull weather data and display on ui page
-- [ ] pull home environment data (temp, humidity, co2)
+- [x] pull home environment data (temp, humidity, co2)
 
 # bug fixes
 
