@@ -298,7 +298,7 @@ pub(crate) fn load_document(path: &str, style: ReaderStyle) -> Result<ReaderDoc,
         .map_err(|e| format!("read failed: {e:?}"))?;
 
     // key the bookmark by file contents (not path) so it follows moves/renames.
-    let key = fnv1a(&bytes) as u32;
+    let key = content_key(&bytes);
     let (chapter, page) = read_progress(&card, key);
 
     let ext = path.rsplit_once('.').map_or("", |(_, ext)| ext);
@@ -381,9 +381,16 @@ pub(crate) fn tap_zone(sx: i32, sy: i32) -> Tap {
     }
 }
 
+// content-hash key of a file's bytes, used to name its progress file so a
+// bookmark follows the book across moves/renames. shared with the library page
+// so both derive the same key.
+pub(crate) fn content_key(bytes: &[u8]) -> u32 {
+    fnv1a(bytes) as u32
+}
+
 // read the saved (chapter, page) for `key` using an already-mounted card,
 // defaulting to the start if there is no readable bookmark.
-fn read_progress(card: &SdCard, key: u32) -> (usize, usize) {
+pub(crate) fn read_progress(card: &SdCard, key: u32) -> (usize, usize) {
     let Ok(bytes) = card.read_file(&progress_path(key)) else {
         return (0, 0);
     };

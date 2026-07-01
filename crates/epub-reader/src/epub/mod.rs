@@ -17,6 +17,8 @@ pub struct Epub {
     bytes: Vec<u8>,
     spine: Vec<String>,
     meta: Meta,
+    // full archive path of the cover image, if one was identified in the OPF.
+    cover_href: Option<String>,
 }
 
 impl Epub {
@@ -27,7 +29,7 @@ impl Epub {
     /// Returns an [`Error`] if the archive, its container, or its OPF package
     /// cannot be read.
     pub fn open(bytes: Vec<u8>) -> Result<Self, Error> {
-        let (spine, meta) = {
+        let (spine, meta, cover_href) = {
             let archive = zip::Archive::open(&bytes)?;
             let container = archive.read("META-INF/container.xml")?;
             let opf_path = container::opf_path(&container)?;
@@ -38,9 +40,15 @@ impl Epub {
                 .iter()
                 .map(|href| resolve(base, href))
                 .collect();
-            (spine, Meta::new(package.title, package.author))
+            let cover_href = package.cover_href.map(|href| resolve(base, &href));
+            (spine, Meta::new(package.title, package.author), cover_href)
         };
-        Ok(Self { bytes, spine, meta })
+        Ok(Self {
+            bytes,
+            spine,
+            meta,
+            cover_href,
+        })
     }
 
     #[must_use]
@@ -84,6 +92,20 @@ impl Epub {
     /// Returns an [`Error`] if the archive is invalid or the entry is missing.
     pub fn read_resource(&self, path: &str) -> Result<Vec<u8>, Error> {
         zip::Archive::open(&self.bytes)?.read(path)
+    }
+
+    /// The raw (undecoded) bytes of the cover image, if the OPF identified one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingEntry`] if no cover was identified, or a read
+    /// error if the identified entry cannot be inflated.
+    pub fn cover(&self) -> Result<Vec<u8>, Error> {
+        let href = self
+            .cover_href
+            .as_deref()
+            .ok_or_else(|| Error::MissingEntry(String::from("cover image")))?;
+        self.read_resource(href)
     }
 }
 
